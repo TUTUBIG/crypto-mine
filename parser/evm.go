@@ -127,7 +127,7 @@ func (e *EVMChain) handleProtocol(log *types.Log, protocol DEXProtocol) error {
 
 // CalculatePriceWithDecimals calculates the price adjusting for token decimals
 // Returns price = amountIn / amountOut after decimal adjustments
-func CalculatePriceWithDecimals(amountIn, amountOut *big.Int, costTokenDecimals, getTokenDecimals int64) (float64, error) {
+func CalculatePriceWithDecimals(amountIn, amountOut *big.Int, tokenInDecimals, tokenOutDecimals int64) (float64, error) {
 	// Validate inputs
 	if amountIn == nil || amountOut == nil {
 		return 0, fmt.Errorf("amounts cannot be nil")
@@ -138,7 +138,7 @@ func CalculatePriceWithDecimals(amountIn, amountOut *big.Int, costTokenDecimals,
 	if amountOut.Cmp(big.NewInt(0)) <= 0 {
 		return 0, fmt.Errorf("amountOut must be positive")
 	}
-	if costTokenDecimals < 0 || getTokenDecimals < 0 {
+	if tokenInDecimals < 0 || tokenOutDecimals < 0 {
 		return 0, fmt.Errorf("decimals cannot be negative")
 	}
 
@@ -146,8 +146,8 @@ func CalculatePriceWithDecimals(amountIn, amountOut *big.Int, costTokenDecimals,
 	amountOutFloat := new(big.Float).SetInt(amountOut)
 
 	// Adjust for decimals
-	costTokenDecimals10 := new(big.Float).SetFloat64(math.Pow10(int(costTokenDecimals)))
-	getTokenDecimals10 := new(big.Float).SetFloat64(math.Pow10(int(getTokenDecimals)))
+	costTokenDecimals10 := new(big.Float).SetFloat64(math.Pow10(int(tokenInDecimals)))
+	getTokenDecimals10 := new(big.Float).SetFloat64(math.Pow10(int(tokenOutDecimals)))
 
 	amountInAdjusted := new(big.Float).Quo(amountInFloat, costTokenDecimals10)
 	amountOutAdjusted := new(big.Float).Quo(amountOutFloat, getTokenDecimals10)
