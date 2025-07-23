@@ -2,11 +2,14 @@ package storage
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -218,5 +221,127 @@ func (c *CloudflareKV) Exists(key string) (bool, error) {
 		}
 		return false, err
 	}
+	return true, nil
+}
+
+type CloudflareD1 struct {
+	baseURL    string
+	token      string
+	httpClient *http.Client
+}
+
+func NewCloudflareD1() *CloudflareD1 {
+	return &CloudflareD1{
+		baseURL: os.Getenv("CLOUDFLARE_URL"),
+		token:   os.Getenv("CLOUDFLARE_TOKEN"),
+		httpClient: &http.Client{
+			Timeout: 5 * time.Second,
+		},
+	}
+}
+
+func (c *CloudflareD1) Insert(object interface{}) (bool, error) {
+	data, err := json.Marshal(object)
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal object: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", c.baseURL+"/pools/add", bytes.NewBuffer(data))
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("remote API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return true, nil
+}
+
+func (c *CloudflareD1) List(chainId, protocol string, pageIndex, pageSize int, object interface{}) error {
+
+	url := fmt.Sprintf("%s/pools?chainId=%s&rotocol=%s&page=%d&pageSize=%d", c.baseURL, chainId, protocol, pageIndex, pageSize)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("remote API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(object); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return nil
+}
+
+type CloudflareDurable struct {
+	baseURL    string
+	token      string
+	httpClient *http.Client
+}
+
+func NewCloudflareDurable() *CloudflareDurable {
+	return &CloudflareDurable{
+		baseURL: os.Getenv("CLOUDFLARE_URL"),
+		token:   os.Getenv("CLOUDFLARE_TOKEN"),
+		httpClient: &http.Client{
+			Timeout: 5 * time.Second,
+		},
+	}
+}
+
+func (c *CloudflareDurable) Publish(data []byte) (bool, error) {
+	// Encode your binary data as base64
+	base64Data := make([]byte, base64.StdEncoding.EncodedLen(len(data)))
+	base64.StdEncoding.Encode(base64Data, data)
+
+	req, err := http.NewRequest("POST", c.baseURL+"/pools/add", bytes.NewBuffer(base64Data))
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("remote API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
 	return true, nil
 }

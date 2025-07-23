@@ -1,8 +1,8 @@
 package storage
 
 import (
-	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -32,23 +32,47 @@ func generatePairInfoId(chainId, protocolName, poolAddress string) string {
 }
 
 type PoolInfo struct {
-	db    *sql.DB
 	Pairs map[string]*PairInfo
+	db    *CloudflareD1
 }
 
 func (pi *PoolInfo) AddPool(pool *PairInfo) {
 	pi.Pairs[pool.ID()] = pool
-	pi.db.Exec(``)
+	_, err := pi.db.Insert(pool)
+	if err != nil {
+		slog.Error("Failed to insert pool into database", "err", err, "pool id", pool.ID())
+		return
+	}
 }
 
 func (pi *PoolInfo) LoadPools() {
-	pi.db.Query(``)
+	pageIndex := 1
+	pageSize := 100
+	for {
+		pairs := make([]*PairInfo, 0)
+		// TODO: get chain id and protocol
+		err := pi.db.List("chain id", "protocol", pageIndex, pageSize, &pairs)
+		if err != nil {
+			slog.Error("Failed to load pools from database", "err", err, "page", pageIndex)
+			return
+		}
+		if len(pairs) == 0 {
+			break
+		}
+		for _, pair := range pairs {
+			pi.Pairs[pair.ID()] = pair
+		}
+		if len(pairs) < pageSize {
+			break
+		}
+		pageIndex++
+	}
 }
 
 func (pi *PoolInfo) FindPool(chainId, protocolName, poolAddress string) *PairInfo {
 	return pi.Pairs[generatePairInfoId(chainId, protocolName, poolAddress)]
 }
 
-func NewPoolInfo(db *sql.DB) *PoolInfo {
+func NewPoolInfo(db *CloudflareD1) *PoolInfo {
 	return &PoolInfo{db: db, Pairs: make(map[string]*PairInfo)}
 }
