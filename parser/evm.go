@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -58,6 +59,7 @@ type EVMChain struct {
 	assemblyWorker func(log *types.Log) error
 	poolInfo       *storage.PoolInfo
 	protocols      []DEXProtocol
+	candleChart    *storage.CandleChart
 }
 
 func NewEVMChain(pi *storage.PoolInfo, rpc, ws string) *EVMChain {
@@ -159,6 +161,34 @@ func CalculatePriceWithDecimals(amountIn, amountOut *big.Int, tokenInDecimals, t
 	return price, nil
 }
 
+func TransferTokenAmount(amountIn, amountOut *big.Int, tokenInDecimals, tokenOutDecimals int64) (float64, float64, error) {
+	// Validate inputs
+	if amountIn == nil || amountOut == nil {
+		return 0, 0, fmt.Errorf("amounts cannot be nil")
+	}
+	if amountIn.Cmp(big.NewInt(0)) <= 0 {
+		return 0, 0, fmt.Errorf("amountIn must be positive")
+	}
+	if amountOut.Cmp(big.NewInt(0)) <= 0 {
+		return 0, 0, fmt.Errorf("amountOut must be positive")
+	}
+	if tokenInDecimals < 0 || tokenOutDecimals < 0 {
+		return 0, 0, fmt.Errorf("decimals cannot be negative")
+	}
+
+	amountInFloat := new(big.Float).SetInt(amountIn)
+	amountOutFloat := new(big.Float).SetInt(amountOut)
+
+	// Adjust for decimals
+	costTokenDecimals10 := new(big.Float).SetFloat64(math.Pow10(int(tokenInDecimals)))
+	getTokenDecimals10 := new(big.Float).SetFloat64(math.Pow10(int(tokenOutDecimals)))
+
+	amountInAdjusted, _ := new(big.Float).Quo(amountInFloat, costTokenDecimals10).Float64()
+	amountOutAdjusted, _ := new(big.Float).Quo(amountOutFloat, getTokenDecimals10).Float64()
+
+	return amountInAdjusted, amountOutAdjusted, nil
+}
+
 func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 	protocolName := trade.Protocol.GetProtocolName()
 	poolInfo := e.poolInfo.FindPool(e.ChainId, protocolName, trade.PoolAddress.Hex())
@@ -184,13 +214,12 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 	}
 
 	// Calculate price with decimals
-	price, err := CalculatePriceWithDecimals(trade.AmountIn, trade.AmountOut, poolInfo.CostTokenDecimals, poolInfo.GetTokenDecimals)
+	costAmount, getAmount, err := TransferTokenAmount(trade.AmountIn, trade.AmountOut, poolInfo.CostTokenDecimals, poolInfo.GetTokenDecimals)
 	if err != nil {
 		return err
 	}
 
-	slog.Info("Price calculated", "price", price, "pool", poolInfo.PoolAddress)
-	return nil
+	return e.candleChart.AddCandle(trade.TradeTime, costAmount, getAmount)
 }
 
 func (e *EVMChain) Stop() {
@@ -203,6 +232,7 @@ type TradeInfo struct {
 	PoolAddress *common.Address
 	AmountIn    *big.Int
 	AmountOut   *big.Int
+	TradeTime   *time.Time
 }
 
 type DEXProtocol interface {
@@ -423,7 +453,9 @@ func (u3 *UniSwapV3) ExtractTradeInfo(log *types.Log) (*TradeInfo, error) {
 		return nil, fmt.Errorf("invalid swap amount %s . amount0 %s amount1 %s", log.Topics[0], amountCost, amountGet)
 	}
 
+	t := time.Unix(int64(log.BlockTimestamp), 0)
 	return &TradeInfo{
+		TradeTime:   &t,
 		PoolAddress: &log.Address,
 		AmountIn:    amountCost,
 		AmountOut:   amountGet,

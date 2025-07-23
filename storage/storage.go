@@ -207,6 +207,11 @@ type RealtimeTradeData struct {
 	AmountOut float64
 }
 
+func (rd *RealtimeTradeData) ToBytes() ([]byte, error) {
+	// todo
+	return nil, nil
+}
+
 type IntervalCandleChart struct {
 	interval           time.Duration
 	lastStartTimestamp *time.Time
@@ -300,20 +305,31 @@ func NewCandleChartKVStorage(engine KVDriver) *CandleChartKVStorage {
 }
 
 type CandleChart struct {
-	data            <-chan *RealtimeTradeData
+	data            chan *RealtimeTradeData
 	intervalCandles []*IntervalCandleChart
+	publisher       *CloudflareDurable
 }
 
 func NewCandleChart() *CandleChart {
 	return &CandleChart{
 		data:            make(chan *RealtimeTradeData, 1000),
 		intervalCandles: make([]*IntervalCandleChart, 0),
+		publisher:       NewCloudflareDurable(),
 	}
 }
 
 func (cc *CandleChart) RegisterIntervalCandle(ic *IntervalCandleChart) *CandleChart {
 	cc.intervalCandles = append(cc.intervalCandles, ic)
 	return cc
+}
+
+func (cc *CandleChart) AddCandle(tradeTime *time.Time, amountIn, amountOut float64) error {
+	cc.data <- &RealtimeTradeData{
+		TradeTime: tradeTime,
+		AmountIn:  amountIn,
+		AmountOut: amountOut,
+	}
+	return nil
 }
 
 func (cc *CandleChart) StartAggregateCandleData() {
@@ -323,6 +339,14 @@ func (cc *CandleChart) StartAggregateCandleData() {
 	})
 
 	for tradeData := range cc.data {
+		// Publish realtime data
+		data, err := tradeData.ToBytes()
+		if err != nil {
+			slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
+		}
+		if _, err := cc.publisher.Publish(data); err != nil {
+			slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
+		}
 		// Process each interval candle
 		for _, candle := range cc.intervalCandles {
 			// Calculate the start time for the current interval
