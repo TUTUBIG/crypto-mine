@@ -24,10 +24,10 @@ type PairInfo struct {
 }
 
 func (pi *PairInfo) ID() string {
-	return generatePairInfoId(pi.ChainId, pi.Protocol, pi.PoolAddress)
+	return GeneratePairInfoId(pi.ChainId, pi.Protocol, pi.PoolAddress)
 }
 
-func generatePairInfoId(chainId, protocolName, poolAddress string) string {
+func GeneratePairInfoId(chainId, protocolName, poolAddress string) string {
 	return fmt.Sprintf("%s-%s-%s", chainId, protocolName, strings.TrimPrefix(poolAddress, "0x"))
 }
 
@@ -71,7 +71,7 @@ func (pi *PoolInfo) LoadPools() {
 }
 
 func (pi *PoolInfo) FindPool(chainId, protocolName, poolAddress string) *PairInfo {
-	return pi.Pairs[generatePairInfoId(chainId, protocolName, poolAddress)]
+	return pi.Pairs[GeneratePairInfoId(chainId, protocolName, poolAddress)]
 }
 
 func NewPoolInfo(db *CloudflareD1) *PoolInfo {

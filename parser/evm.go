@@ -263,7 +263,7 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 		return err
 	}
 
-	return e.candleChart.AddCandle(trade.TradeTime, costAmount, getAmount)
+	return e.candleChart.AddCandle(storage.GeneratePairInfoId(e.chainId, protocolName, strings.TrimPrefix(trade.PoolAddress.Hex(), "0x")), trade.TradeTime, costAmount, getAmount)
 }
 
 func (e *EVMChain) Stop() {
@@ -517,7 +517,8 @@ func (u3 *UniSwapV3) ExtractTradeInfo(log *types.Log) (*TradeInfo, error) {
 		return nil, fmt.Errorf("failed to extract valid swap amounts from log %s", log.TxHash.Hex())
 	}
 
-	t := time.Unix(int64(log.BlockTimestamp), 0)
+	//todo Replace with block time, can't get this data from logs subscription
+	t := time.Now()
 	return &TradeInfo{
 		Protocol:    u3,
 		TradeTime:   &t,

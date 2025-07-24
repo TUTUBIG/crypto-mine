@@ -203,6 +203,7 @@ func (cdl *CandleDataList) FromBytes(data []byte) error {
 }
 
 type RealtimeTradeData struct {
+	PoolID    string
 	TradeTime *time.Time
 	AmountIn  float64
 	AmountOut float64
@@ -218,7 +219,7 @@ func (rd *RealtimeTradeData) ToBytes() ([]byte, error) {
 	// Serialize TradeTime as UnixNano (int64), or 0 if nil
 	var ts int64
 	if rd.TradeTime != nil {
-		ts = rd.TradeTime.UnixNano()
+		ts = rd.TradeTime.Unix()
 	}
 	timeBytes := make([]byte, 8)
 	for i := 0; i < 8; i++ {
@@ -351,8 +352,9 @@ func (cc *CandleChart) RegisterIntervalCandle(ic *IntervalCandleChart) *CandleCh
 	return cc
 }
 
-func (cc *CandleChart) AddCandle(tradeTime *time.Time, amountIn, amountOut float64) error {
+func (cc *CandleChart) AddCandle(poolId string, tradeTime *time.Time, amountIn, amountOut float64) error {
 	cc.data <- &RealtimeTradeData{
+		PoolID:    poolId,
 		TradeTime: tradeTime,
 		AmountIn:  amountIn,
 		AmountOut: amountOut,
@@ -397,7 +399,8 @@ func (cc *CandleChart) StartAggregateCandleData() {
 					// Skip for larger intervals if it is before the smaller one
 					break
 				} else {
-					if err := candle.storage.Store("", candle.interval, candle.currentCandle); err != nil {
+					candle.lastStartTimestamp = tradeData.TradeTime
+					if err := candle.storage.Store(tradeData.PoolID, candle.interval, candle.currentCandle); err != nil {
 						slog.Error("store candle error", "error", err.Error(), "candle", candle.currentCandle)
 						break
 					}
