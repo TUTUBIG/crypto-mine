@@ -232,8 +232,8 @@ type CloudflareD1 struct {
 
 func NewCloudflareD1() *CloudflareD1 {
 	return &CloudflareD1{
-		baseURL: os.Getenv("cf_d1"),
-		token:   os.Getenv("cf_token"),
+		baseURL: os.Getenv("worker_host"),
+		token:   os.Getenv("worker_token"),
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -310,8 +310,8 @@ type CloudflareDurable struct {
 
 func NewCloudflareDurable() *CloudflareDurable {
 	return &CloudflareDurable{
-		baseURL: os.Getenv("cf_d1"),
-		token:   os.Getenv("cf_token"),
+		baseURL: os.Getenv("worker_host"),
+		token:   os.Getenv("worker_token"),
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -323,11 +323,11 @@ func (c *CloudflareDurable) Publish(data []byte) (bool, error) {
 	base64Data := make([]byte, base64.StdEncoding.EncodedLen(len(data)))
 	base64.StdEncoding.Encode(base64Data, data)
 
-	req, err := http.NewRequest("POST", c.baseURL+"/pools/add", bytes.NewBuffer(base64Data))
+	req, err := http.NewRequest("POST", c.baseURL+"/publish", bytes.NewBuffer(base64Data))
 	if err != nil {
 		return false, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/base64")
 	req.Header.Set("Authorization", "Bearer "+c.token)
 
 	resp, err := c.httpClient.Do(req)

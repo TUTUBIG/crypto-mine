@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto-mine/storage"
 	"fmt"
+	"log"
 	"log/slog"
 	"math"
 	"math/big"
@@ -46,11 +47,14 @@ func (ee *EvmEngine) RegisterChain(chain *EVMChain) *EvmEngine {
 	return ee
 }
 
-func (ee *EvmEngine) Start() {
+func (ee *EvmEngine) Start() error {
 	for _, chain := range ee.chains {
-		chain.StartPumpLogs(ee.filter)
+		if err := chain.StartPumpLogs(ee.filter); err != nil {
+			return fmt.Errorf("failed to start pump logs for chain %s: %w", chain.chainId, err)
+		}
 		chain.StartAssemblyLine()
 	}
+	return nil
 }
 
 func (ee *EvmEngine) Stop() {
@@ -74,15 +78,22 @@ type EVMChain struct {
 	candleChart *storage.CandleChart
 }
 
-func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string) *EVMChain {
+func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string) (*EVMChain, error) {
 	rpcClient, err := ethclient.Dial(rpc)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("failed to connect to RPC endpoint: %w", err)
 	}
+
+	wsClient, err := ethclient.Dial(ws)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to WebSocket endpoint: %w", err)
+	}
+
 	chainId, err := rpcClient.ChainID(context.Background())
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("failed to get chain ID: %w", err)
 	}
+
 	return &EVMChain{
 		chainId:     chainId.String(),
 		poolInfo:    pi,
@@ -93,8 +104,8 @@ func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string) 
 		trades:      make(chan *TradeInfo, 1000),
 		shutdown:    make(chan struct{}),
 		ethClient:   rpcClient,
-		wsClient:    rpcClient,
-	}
+		wsClient:    wsClient,
+	}, nil
 }
 
 func (e *EVMChain) RegisterProtocol(protocol DEXProtocol) *EVMChain {
@@ -102,12 +113,14 @@ func (e *EVMChain) RegisterProtocol(protocol DEXProtocol) *EVMChain {
 	return e
 }
 
-func (e *EVMChain) StartPumpLogs(filter ethereum.FilterQuery) {
+func (e *EVMChain) StartPumpLogs(filter ethereum.FilterQuery) error {
 	sub, err := e.wsClient.SubscribeFilterLogs(context.Background(), filter, e.logs)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("failed to subscribe to filter logs: %w", err)
 	}
+	slog.Info("start monitoring pump logs", "chain id", e.chainId, "topics", filter.Topics)
 	e.subscriber = sub
+	return nil
 }
 
 func (e *EVMChain) StartAssemblyLine() {
@@ -118,13 +131,13 @@ func (e *EVMChain) StartAssemblyLine() {
 			case <-e.shutdown:
 				slog.Info("assembly lines shutting down", "network", e.chainId, "worker", "protocol")
 				return
-			case log := <-e.logs:
+			case l := <-e.logs:
 				for _, protocol := range e.protocols {
-					if !protocol.HasTopic(log.Topics[0]) {
+					if !protocol.HasTopic(l.Topics[0]) {
 						continue
 					} else {
-						if err := e.handleProtocol(&log, protocol); err != nil {
-							slog.Error("Failed to extract trade info", "err", err, "tx hash", log.TxHash.Hex())
+						if err := e.handleProtocol(&l, protocol); err != nil {
+							slog.Error("Failed to extract trade info", "err", err, "tx hash", l.TxHash.Hex())
 						}
 						break
 					}
@@ -289,7 +302,7 @@ var erc20ABI *abi.ABI
 func init() {
 	a, err := abi.JSON(strings.NewReader(erc20TokenABI))
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	erc20ABI = &a
 }
@@ -302,7 +315,7 @@ type UniSwapV3 struct {
 func NewUniSwapV3() *UniSwapV3 {
 	a, err := abi.JSON(strings.NewReader(swapV3PoolABI))
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	return &UniSwapV3{
 		swapTopic: []common.Hash{
@@ -472,20 +485,41 @@ func (u3 *UniSwapV3) ExtractTradeInfo(log *types.Log) (*TradeInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	var amountCost, amountGet *big.Int
-	if v, ok := swapInfo[0].(*big.Int); ok && v.Cmp(big.NewInt(0)) < 0 {
-		amountCost = v.Abs(v)
+
+	// In UniSwap V3, amount0 and amount1 can be positive or negative
+	// One will be positive (tokens received) and one negative (tokens given)
+	var amount0, amount1 *big.Int
+	var ok bool
+
+	if amount0, ok = swapInfo[0].(*big.Int); !ok {
+		return nil, fmt.Errorf("invalid amount0 type in swap data")
 	}
-	if v, ok := swapInfo[1].(*big.Int); ok {
-		amountGet = v
+	if amount1, ok = swapInfo[1].(*big.Int); !ok {
+		return nil, fmt.Errorf("invalid amount1 type in swap data")
+	}
+
+	var amountCost, amountGet *big.Int
+
+	// Determine which amount is input (negative) and which is output (positive)
+	if amount0.Cmp(big.NewInt(0)) < 0 && amount1.Cmp(big.NewInt(0)) > 0 {
+		// amount0 is negative (input), amount1 is positive (output)
+		amountCost = new(big.Int).Abs(amount0)
+		amountGet = amount1
+	} else if amount1.Cmp(big.NewInt(0)) < 0 && amount0.Cmp(big.NewInt(0)) > 0 {
+		// amount1 is negative (input), amount0 is positive (output)
+		amountCost = new(big.Int).Abs(amount1)
+		amountGet = amount0
+	} else {
+		return nil, fmt.Errorf("invalid swap amounts: amount0=%s, amount1=%s", amount0.String(), amount1.String())
 	}
 
 	if amountCost == nil || amountGet == nil {
-		return nil, fmt.Errorf("invalid swap amount %s . amount0 %s amount1 %s", log.Topics[0], amountCost, amountGet)
+		return nil, fmt.Errorf("failed to extract valid swap amounts from log %s", log.TxHash.Hex())
 	}
 
 	t := time.Unix(int64(log.BlockTimestamp), 0)
 	return &TradeInfo{
+		Protocol:    u3,
 		TradeTime:   &t,
 		PoolAddress: &log.Address,
 		AmountIn:    amountCost,

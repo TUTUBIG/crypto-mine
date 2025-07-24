@@ -37,6 +37,7 @@ type PoolInfo struct {
 }
 
 func (pi *PoolInfo) AddPool(pool *PairInfo) {
+	slog.Info("Add new pool", "id", pool.ID())
 	pi.Pairs[pool.ID()] = pool
 	_, err := pi.db.Insert(pool)
 	if err != nil {

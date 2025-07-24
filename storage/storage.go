@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"log"
 	"log/slog"
 	"sort"
 	"time"
@@ -208,8 +209,36 @@ type RealtimeTradeData struct {
 }
 
 func (rd *RealtimeTradeData) ToBytes() ([]byte, error) {
-	// todo
-	return nil, nil
+	if rd == nil {
+		return nil, fmt.Errorf("RealtimeTradeData is nil")
+	}
+
+	buf := make([]byte, 0, 8+8+8) // time (int64) + float64 + float64
+
+	// Serialize TradeTime as UnixNano (int64), or 0 if nil
+	var ts int64
+	if rd.TradeTime != nil {
+		ts = rd.TradeTime.UnixNano()
+	}
+	timeBytes := make([]byte, 8)
+	for i := 0; i < 8; i++ {
+		timeBytes[i] = byte(ts >> (8 * i))
+	}
+	buf = append(buf, timeBytes...)
+
+	// Serialize AmountIn (float64)
+	amountInBits := *(*uint64)(unsafe.Pointer(&rd.AmountIn))
+	for i := 0; i < 8; i++ {
+		buf = append(buf, byte(amountInBits>>(8*i)))
+	}
+
+	// Serialize AmountOut (float64)
+	amountOutBits := *(*uint64)(unsafe.Pointer(&rd.AmountOut))
+	for i := 0; i < 8; i++ {
+		buf = append(buf, byte(amountOutBits>>(8*i)))
+	}
+
+	return buf, nil
 }
 
 type IntervalCandleChart struct {
@@ -222,7 +251,7 @@ type IntervalCandleChart struct {
 
 func NewIntervalCandleChart(interval time.Duration, storage CandleDataStorage) *IntervalCandleChart {
 	if interval < minimumInterval {
-		panic("interval too small")
+		log.Fatal("interval too small")
 	}
 
 	startTimestampMinute := time.Now().Truncate(minimumInterval)
@@ -337,22 +366,43 @@ func (cc *CandleChart) StartAggregateCandleData() {
 		return cc.intervalCandles[i].interval < cc.intervalCandles[j].interval
 	})
 
-	for tradeData := range cc.data {
-		// Publish realtime data
-		data, err := tradeData.ToBytes()
-		if err != nil {
-			slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
-		}
-		if _, err := cc.publisher.Publish(data); err != nil {
-			slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
-		}
-		// Process each interval candle
-		for _, candle := range cc.intervalCandles {
-			// Calculate the start time for the current interval
-			if candle.lastStartTimestamp.Add(candle.interval).After(*tradeData.TradeTime) {
-				if candle.currentCandle == nil {
+	go func() {
+		for tradeData := range cc.data {
+			// Publish realtime data
+			data, err := tradeData.ToBytes()
+			if err != nil {
+				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
+			}
+			if _, err := cc.publisher.Publish(data); err != nil {
+				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
+			}
+			// Process each interval candle
+			for _, candle := range cc.intervalCandles {
+				// Calculate the start time for the current interval
+				if candle.lastStartTimestamp.Add(candle.interval).After(*tradeData.TradeTime) {
+					if candle.currentCandle == nil {
+						price := tradeData.AmountIn / tradeData.AmountOut
+						candle.currentCandle = &CandleData{
+							OpenPrice:  price,
+							ClosePrice: price,
+							HighPrice:  price,
+							LowPrice:   price,
+							VolumeIn:   tradeData.AmountIn,
+							VolumeOut:  tradeData.AmountOut,
+							Timestamp:  tradeData.TradeTime.Unix(),
+						}
+					} else {
+						candle.currentCandle.refresh(tradeData.AmountIn, tradeData.AmountOut)
+					}
+					// Skip for larger intervals if it is before the smaller one
+					break
+				} else {
+					if err := candle.storage.Store("", candle.interval, candle.currentCandle); err != nil {
+						slog.Error("store candle error", "error", err.Error(), "candle", candle.currentCandle)
+						break
+					}
 					price := tradeData.AmountIn / tradeData.AmountOut
-					candle.currentCandle = &CandleData{
+					newCandleData := CandleData{
 						OpenPrice:  price,
 						ClosePrice: price,
 						HighPrice:  price,
@@ -361,28 +411,9 @@ func (cc *CandleChart) StartAggregateCandleData() {
 						VolumeOut:  tradeData.AmountOut,
 						Timestamp:  tradeData.TradeTime.Unix(),
 					}
-				} else {
-					candle.currentCandle.refresh(tradeData.AmountIn, tradeData.AmountOut)
+					candle.currentCandle = &newCandleData
 				}
-				// Skip for larger intervals if it is before the smaller one
-				break
-			} else {
-				if err := candle.storage.Store("", candle.interval, candle.currentCandle); err != nil {
-					slog.Error("store candle error", "error", err.Error(), "candle", candle.currentCandle)
-					break
-				}
-				price := tradeData.AmountIn / tradeData.AmountOut
-				newCandleData := CandleData{
-					OpenPrice:  price,
-					ClosePrice: price,
-					HighPrice:  price,
-					LowPrice:   price,
-					VolumeIn:   tradeData.AmountIn,
-					VolumeOut:  tradeData.AmountOut,
-					Timestamp:  tradeData.TradeTime.Unix(),
-				}
-				candle.currentCandle = &newCandleData
 			}
 		}
-	}
+	}()
 }

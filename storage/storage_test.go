@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/base64"
+	"os"
 	"testing"
 )
 
@@ -88,4 +89,14 @@ func TestCloudflareKV_Load(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Log(string(value))
+}
+
+func TestCloudflareDurable_Publish(t *testing.T) {
+	os.Setenv("worker_host", "http://localhost:8787")
+	d := NewCloudflareDurable()
+	ok, err := d.Publish([]byte("hello world"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(ok)
 }
