@@ -286,7 +286,6 @@ func (cs *CandleChartKVStorage) GetLatestCandle(pairID string, interval time.Dur
 	return nil, nil
 }
 
-// Additional utility methods
 func (cs *CandleChartKVStorage) GetCandlesByTimeRange(pairID string, interval time.Duration, startTime, endTime time.Time) ([]*CandleData, error) {
 	return cs.GetCandles(pairID, interval, startTime.Unix(), endTime.Unix(), 0)
 }

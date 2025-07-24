@@ -23,7 +23,20 @@ type EvmEngine struct {
 }
 
 func NewEVMEngine() *EvmEngine {
+	filter := ethereum.FilterQuery{
+		BlockHash: nil,
+		FromBlock: nil,
+		ToBlock:   nil,
+		Addresses: nil,
+		Topics: [][]common.Hash{
+			{
+				common.HexToHash(swapV3Topic1),
+				common.HexToHash(swapV3Topic1),
+			},
+		},
+	}
 	return &EvmEngine{
+		filter: filter,
 		chains: make([]*EVMChain, 0),
 	}
 }
@@ -47,23 +60,46 @@ func (ee *EvmEngine) Stop() {
 }
 
 type EVMChain struct {
-	ChainId        string
-	shutdown       chan struct{}
-	Endpoint       string
-	WSEndpoint     string
-	ethClient      *ethclient.Client
-	wsClient       *ethclient.Client
-	subscriber     ethereum.Subscription
-	logs           chan types.Log
-	trades         chan *TradeInfo
-	assemblyWorker func(log *types.Log) error
-	poolInfo       *storage.PoolInfo
-	protocols      []DEXProtocol
-	candleChart    *storage.CandleChart
+	chainId     string
+	shutdown    chan struct{}
+	endpoint    string
+	wsEndpoint  string
+	ethClient   *ethclient.Client
+	wsClient    *ethclient.Client
+	subscriber  ethereum.Subscription
+	logs        chan types.Log
+	trades      chan *TradeInfo
+	poolInfo    *storage.PoolInfo
+	protocols   []DEXProtocol
+	candleChart *storage.CandleChart
 }
 
-func NewEVMChain(pi *storage.PoolInfo, rpc, ws string) *EVMChain {
-	return &EVMChain{poolInfo: pi, Endpoint: rpc, WSEndpoint: ws, logs: make(chan types.Log, 1000)}
+func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string) *EVMChain {
+	rpcClient, err := ethclient.Dial(rpc)
+	if err != nil {
+		panic(err)
+	}
+	chainId, err := rpcClient.ChainID(context.Background())
+	if err != nil {
+		panic(err)
+	}
+	return &EVMChain{
+		chainId:     chainId.String(),
+		poolInfo:    pi,
+		candleChart: cc,
+		endpoint:    rpc,
+		wsEndpoint:  ws,
+		logs:        make(chan types.Log, 1000),
+		trades:      make(chan *TradeInfo, 1000),
+		shutdown:    make(chan struct{}),
+		ethClient:   rpcClient,
+		wsClient:    rpcClient,
+	}
+}
+
+func (e *EVMChain) RegisterProtocol(protocol DEXProtocol) *EVMChain {
+	e.protocols = append(e.protocols, protocol)
+	return e
 }
 
 func (e *EVMChain) StartPumpLogs(filter ethereum.FilterQuery) {
@@ -80,7 +116,7 @@ func (e *EVMChain) StartAssemblyLine() {
 		for {
 			select {
 			case <-e.shutdown:
-				slog.Info("assembly lines shutting down", "network", e.ChainId, "worker", "protocol")
+				slog.Info("assembly lines shutting down", "network", e.chainId, "worker", "protocol")
 				return
 			case log := <-e.logs:
 				for _, protocol := range e.protocols {
@@ -102,7 +138,7 @@ func (e *EVMChain) StartAssemblyLine() {
 		for {
 			select {
 			case <-e.shutdown:
-				slog.Info("assembly lines shutting down", "network", e.ChainId, "worker", "trad info")
+				slog.Info("assembly lines shutting down", "network", e.chainId, "worker", "trad info")
 				return
 			case trade := <-e.trades:
 				if err := e.handleTradeInfo(trade); err != nil {
@@ -110,11 +146,6 @@ func (e *EVMChain) StartAssemblyLine() {
 				}
 			}
 		}
-	}()
-
-	// store candle chart
-	go func() {
-
 	}()
 }
 
@@ -191,7 +222,7 @@ func TransferTokenAmount(amountIn, amountOut *big.Int, tokenInDecimals, tokenOut
 
 func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 	protocolName := trade.Protocol.GetProtocolName()
-	poolInfo := e.poolInfo.FindPool(e.ChainId, protocolName, trade.PoolAddress.Hex())
+	poolInfo := e.poolInfo.FindPool(e.chainId, protocolName, trade.PoolAddress.Hex())
 	if poolInfo == nil {
 		// get pair info through pool address
 		pi, err := trade.Protocol.GetPoolInfo(e.ethClient, trade.PoolAddress)
@@ -199,7 +230,7 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 			return err
 		}
 		poolInfo = &storage.PairInfo{
-			ChainId:           e.ChainId,
+			ChainId:           e.chainId,
 			Protocol:          protocolName,
 			PoolAddress:       trade.PoolAddress.Hex(),
 			PoolName:          pi.PoolName,

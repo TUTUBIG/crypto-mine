@@ -232,8 +232,8 @@ type CloudflareD1 struct {
 
 func NewCloudflareD1() *CloudflareD1 {
 	return &CloudflareD1{
-		baseURL: os.Getenv("CLOUDFLARE_URL"),
-		token:   os.Getenv("CLOUDFLARE_TOKEN"),
+		baseURL: os.Getenv("cf_d1"),
+		token:   os.Getenv("cf_token"),
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -310,8 +310,8 @@ type CloudflareDurable struct {
 
 func NewCloudflareDurable() *CloudflareDurable {
 	return &CloudflareDurable{
-		baseURL: os.Getenv("CLOUDFLARE_URL"),
-		token:   os.Getenv("CLOUDFLARE_TOKEN"),
+		baseURL: os.Getenv("cf_d1"),
+		token:   os.Getenv("cf_token"),
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
