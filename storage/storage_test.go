@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestCandleDataList_Base64Encode(t *testing.T) {
@@ -94,7 +95,18 @@ func TestCloudflareKV_Load(t *testing.T) {
 func TestCloudflareDurable_Publish(t *testing.T) {
 	_ = os.Setenv("worker_host", "http://localhost:8787")
 	d := NewCloudflareDurable()
-	ok, err := d.Publish([]byte("hello world"))
+	n := time.Now()
+	data := &RealtimeTradeData{
+		PoolID:    "00000000",
+		AmountIn:  1000,
+		AmountOut: 500,
+		TradeTime: &n,
+	}
+	dq, e := data.ToBytes()
+	if e != nil {
+		t.Fatal(e)
+	}
+	ok, err := d.Publish(dq)
 	if err != nil {
 		t.Fatal(err)
 	}

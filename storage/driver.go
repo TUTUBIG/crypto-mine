@@ -318,7 +318,6 @@ func NewCloudflareDurable() *CloudflareDurable {
 }
 
 func (c *CloudflareDurable) Publish(data []byte) (bool, error) {
-
 	req, err := http.NewRequest("POST", c.baseURL+"/publish", bytes.NewBuffer(data))
 	if err != nil {
 		return false, fmt.Errorf("failed to create request: %w", err)
