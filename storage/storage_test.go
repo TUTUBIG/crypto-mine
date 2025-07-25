@@ -92,7 +92,7 @@ func TestCloudflareKV_Load(t *testing.T) {
 }
 
 func TestCloudflareDurable_Publish(t *testing.T) {
-	os.Setenv("worker_host", "http://localhost:8787")
+	_ = os.Setenv("worker_host", "http://localhost:8787")
 	d := NewCloudflareDurable()
 	ok, err := d.Publish([]byte("hello world"))
 	if err != nil {

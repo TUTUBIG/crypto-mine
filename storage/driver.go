@@ -2,7 +2,6 @@ package storage
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -319,15 +318,12 @@ func NewCloudflareDurable() *CloudflareDurable {
 }
 
 func (c *CloudflareDurable) Publish(data []byte) (bool, error) {
-	// Encode your binary data as base64
-	base64Data := make([]byte, base64.StdEncoding.EncodedLen(len(data)))
-	base64.StdEncoding.Encode(base64Data, data)
 
-	req, err := http.NewRequest("POST", c.baseURL+"/publish", bytes.NewBuffer(base64Data))
+	req, err := http.NewRequest("POST", c.baseURL+"/publish", bytes.NewBuffer(data))
 	if err != nil {
 		return false, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/base64")
+	req.Header.Set("Content-Type", "application/binary")
 	req.Header.Set("Authorization", "Bearer "+c.token)
 
 	resp, err := c.httpClient.Do(req)
