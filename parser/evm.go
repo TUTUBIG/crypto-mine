@@ -517,7 +517,7 @@ func (u3 *UniSwapV3) ExtractTradeInfo(log *types.Log) (*TradeInfo, error) {
 		return nil, fmt.Errorf("failed to extract valid swap amounts from log %s", log.TxHash.Hex())
 	}
 
-	//todo Replace with block time, can't get this data from logs subscription
+	//TODO: Replace with block time, can't get this data from logs subscription
 	t := time.Now()
 	return &TradeInfo{
 		Protocol:    u3,

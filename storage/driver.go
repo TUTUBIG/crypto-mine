@@ -267,9 +267,10 @@ func (c *CloudflareD1) Insert(object interface{}) (bool, error) {
 	return true, nil
 }
 
-func (c *CloudflareD1) List(chainId, protocol string, pageIndex, pageSize int, object interface{}) error {
+func (c *CloudflareD1) List(pageIndex, pageSize int, object interface{}) error {
+	// TODO: Check if object is a pointer
 
-	url := fmt.Sprintf("%s/pools?chainId=%s&rotocol=%s&page=%d&pageSize=%d", c.baseURL, chainId, protocol, pageIndex, pageSize)
+	url := fmt.Sprintf("%s/pools?page=%d&pageSize=%d", c.baseURL, pageIndex, pageSize)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -293,6 +294,41 @@ func (c *CloudflareD1) List(chainId, protocol string, pageIndex, pageSize int, o
 		return fmt.Errorf("remote API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
+	if err := json.NewDecoder(resp.Body).Decode(object); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return nil
+}
+
+func (c *CloudflareD1) Get(chainId, protocolName, poolAddress string, object interface{}) error {
+	// TODO: Check if object is a pointer
+
+	url := fmt.Sprintf("%s/pool?chain_id=%s&protocol_name=%s&pool_address=%s", c.baseURL, chainId, protocolName, poolAddress)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("remote API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// TODO: Could be null
 	decoder := json.NewDecoder(resp.Body)
 	if err := decoder.Decode(object); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 )
 
 const (
@@ -11,16 +12,16 @@ const (
 )
 
 type PairInfo struct {
-	ChainId           string
-	Protocol          string
-	PoolAddress       string
-	PoolName          string
-	CostTokenAddress  string
-	CostTokenSymbol   string
-	CostTokenDecimals int64
-	GetTokenAddress   string
-	GetTokenSymbol    string
-	GetTokenDecimals  int64
+	ChainId           string `json:"chain_id"`
+	Protocol          string `json:"protocol"`
+	PoolAddress       string `json:"pool_address"`
+	PoolName          string `json:"pool_name"`
+	CostTokenAddress  string `json:"cost_token_address"`
+	CostTokenSymbol   string `json:"cost_token_symbol"`
+	CostTokenDecimals int64  `json:"cost_token_decimals"`
+	GetTokenAddress   string `json:"get_token_address"`
+	GetTokenSymbol    string `json:"get_token_symbol"`
+	GetTokenDecimals  int64  `json:"get_token_decimals"`
 }
 
 func (pi *PairInfo) ID() string {
@@ -32,8 +33,9 @@ func GeneratePairInfoId(chainId, protocolName, poolAddress string) string {
 }
 
 type PoolInfo struct {
-	Pairs map[string]*PairInfo
-	db    *CloudflareD1
+	Pairs     map[string]*PairInfo
+	db        *CloudflareD1
+	fetchDone bool
 }
 
 func (pi *PoolInfo) AddPool(pool *PairInfo) {
@@ -46,32 +48,55 @@ func (pi *PoolInfo) AddPool(pool *PairInfo) {
 	}
 }
 
-func (pi *PoolInfo) LoadPools() {
-	pageIndex := 1
-	pageSize := 100
-	for {
-		pairs := make([]*PairInfo, 0)
-		// TODO: get chain id and protocol
-		err := pi.db.List("chain id", "protocol", pageIndex, pageSize, &pairs)
-		if err != nil {
-			slog.Error("Failed to load pools from database", "err", err, "page", pageIndex)
-			return
+func (pi *PoolInfo) AsyncLoadPools() {
+	go func() {
+		defer func() {
+			pi.fetchDone = true
+		}()
+		pageIndex := 1
+		pageSize := 300
+		for {
+			pairs := make([]*PairInfo, 0)
+			err := pi.db.List(pageIndex, pageSize, &pairs)
+			if err != nil {
+				slog.Error("Failed to load pools from database", "err", err, "page", pageIndex)
+				panic(err)
+			}
+			if len(pairs) == 0 {
+				return
+			}
+			for _, pair := range pairs {
+				pi.Pairs[pair.ID()] = pair
+			}
+			if len(pairs) < pageSize {
+				return
+			}
+			pageIndex++
 		}
-		if len(pairs) == 0 {
-			break
-		}
-		for _, pair := range pairs {
-			pi.Pairs[pair.ID()] = pair
-		}
-		if len(pairs) < pageSize {
-			break
-		}
-		pageIndex++
+	}()
+	slog.Info("Swap pools loading... Waiting for 10 seconds")
+	time.Sleep(10 * time.Second)
+}
+
+func (pi *PoolInfo) LoadSinglePool(chainId, protocolName, poolAddress string) *PairInfo {
+	var pool *PairInfo
+	err := pi.db.Get(chainId, protocolName, poolAddress, &pool)
+	if err != nil {
+		slog.Error("Failed to load pools from database", "err", err, "pool", poolAddress, "chainId", chainId, "protocolName", protocolName)
+		return nil
 	}
+	return pool
 }
 
 func (pi *PoolInfo) FindPool(chainId, protocolName, poolAddress string) *PairInfo {
-	return pi.Pairs[GeneratePairInfoId(chainId, protocolName, poolAddress)]
+	p, f := pi.Pairs[GeneratePairInfoId(chainId, protocolName, poolAddress)]
+	if !f && !pi.fetchDone {
+		p = pi.LoadSinglePool(chainId, protocolName, poolAddress)
+		if p != nil {
+			pi.Pairs[GeneratePairInfoId(chainId, protocolName, poolAddress)] = p
+		}
+	}
+	return p
 }
 
 func NewPoolInfo(db *CloudflareD1) *PoolInfo {
