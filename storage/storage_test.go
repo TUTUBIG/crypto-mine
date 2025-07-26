@@ -97,7 +97,7 @@ func TestCloudflareDurable_Publish(t *testing.T) {
 	d := NewCloudflareDurable()
 	n := time.Now()
 	data := &RealtimeTradeData{
-		PoolID:    "00000000",
+		poolID:    "00000000",
 		AmountIn:  1000,
 		AmountOut: 500,
 		TradeTime: &n,
@@ -106,7 +106,7 @@ func TestCloudflareDurable_Publish(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	ok, err := d.Publish(dq)
+	ok, err := d.Publish(data.poolID, dq)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -203,7 +203,7 @@ func (cdl *CandleDataList) FromBytes(data []byte) error {
 }
 
 type RealtimeTradeData struct {
-	PoolID    string
+	poolID    string // ignore serialization
 	TradeTime *time.Time
 	AmountIn  float64
 	AmountOut float64
@@ -354,7 +354,7 @@ func (cc *CandleChart) RegisterIntervalCandle(ic *IntervalCandleChart) *CandleCh
 
 func (cc *CandleChart) AddCandle(poolId string, tradeTime *time.Time, amountIn, amountOut float64) error {
 	cc.data <- &RealtimeTradeData{
-		PoolID:    poolId,
+		poolID:    poolId,
 		TradeTime: tradeTime,
 		AmountIn:  amountIn,
 		AmountOut: amountOut,
@@ -375,7 +375,7 @@ func (cc *CandleChart) StartAggregateCandleData() {
 			if err != nil {
 				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
 			}
-			if _, err := cc.publisher.Publish(data); err != nil {
+			if _, err := cc.publisher.Publish(tradeData.poolID, data); err != nil {
 				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
 			}
 			// Process each interval candle
@@ -400,7 +400,7 @@ func (cc *CandleChart) StartAggregateCandleData() {
 					break
 				} else {
 					candle.lastStartTimestamp = tradeData.TradeTime
-					if err := candle.storage.Store(tradeData.PoolID, candle.interval, candle.currentCandle); err != nil {
+					if err := candle.storage.Store(tradeData.poolID, candle.interval, candle.currentCandle); err != nil {
 						slog.Error("store candle error", "error", err.Error(), "candle", candle.currentCandle)
 						break
 					}

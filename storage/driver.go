@@ -353,13 +353,14 @@ func NewCloudflareDurable() *CloudflareDurable {
 	}
 }
 
-func (c *CloudflareDurable) Publish(data []byte) (bool, error) {
+func (c *CloudflareDurable) Publish(poolId string, data []byte) (bool, error) {
 	req, err := http.NewRequest("POST", c.baseURL+"/publish", bytes.NewBuffer(data))
 	if err != nil {
 		return false, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/binary")
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Customized-Pool-Id", poolId)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
