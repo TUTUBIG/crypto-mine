@@ -20,6 +20,7 @@ func init() {
 func main() {
 	candleStorage := storage.NewCandleChartKVStorage(storage.NewCloudflareKV(os.Getenv("cf_account"), os.Getenv("cf_namespace"), os.Getenv("cf_api_key")))
 	poolStorage := storage.NewPoolInfo(storage.NewCloudflareD1())
+	poolStorage.AsyncLoadPools()
 
 	minuteChart := storage.NewIntervalCandleChart(time.Minute, candleStorage)
 	candleChart := storage.NewCandleChart().RegisterIntervalCandle(minuteChart)

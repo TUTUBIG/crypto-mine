@@ -171,40 +171,6 @@ func (e *EVMChain) handleProtocol(log *types.Log, protocol DEXProtocol) error {
 	return nil
 }
 
-// CalculatePriceWithDecimals calculates the price adjusting for token decimals
-// Returns price = amountIn / amountOut after decimal adjustments
-func CalculatePriceWithDecimals(amountIn, amountOut *big.Int, tokenInDecimals, tokenOutDecimals int64) (float64, error) {
-	// Validate inputs
-	if amountIn == nil || amountOut == nil {
-		return 0, fmt.Errorf("amounts cannot be nil")
-	}
-	if amountIn.Cmp(big.NewInt(0)) <= 0 {
-		return 0, fmt.Errorf("amountIn must be positive")
-	}
-	if amountOut.Cmp(big.NewInt(0)) <= 0 {
-		return 0, fmt.Errorf("amountOut must be positive")
-	}
-	if tokenInDecimals < 0 || tokenOutDecimals < 0 {
-		return 0, fmt.Errorf("decimals cannot be negative")
-	}
-
-	amountInFloat := new(big.Float).SetInt(amountIn)
-	amountOutFloat := new(big.Float).SetInt(amountOut)
-
-	// Adjust for decimals
-	costTokenDecimals10 := new(big.Float).SetFloat64(math.Pow10(int(tokenInDecimals)))
-	getTokenDecimals10 := new(big.Float).SetFloat64(math.Pow10(int(tokenOutDecimals)))
-
-	amountInAdjusted := new(big.Float).Quo(amountInFloat, costTokenDecimals10)
-	amountOutAdjusted := new(big.Float).Quo(amountOutFloat, getTokenDecimals10)
-
-	// price = amountInAdjusted / amountOutAdjusted
-	priceFloat := new(big.Float).Quo(amountInAdjusted, amountOutAdjusted)
-	price, _ := priceFloat.Float64()
-
-	return price, nil
-}
-
 func TransferTokenAmount(amountIn, amountOut *big.Int, tokenInDecimals, tokenOutDecimals int64) (float64, float64, error) {
 	// Validate inputs
 	if amountIn == nil || amountOut == nil {
@@ -231,6 +197,9 @@ func TransferTokenAmount(amountIn, amountOut *big.Int, tokenInDecimals, tokenOut
 	amountOutAdjusted, _ := new(big.Float).Quo(amountOutFloat, getTokenDecimals10).Float64()
 
 	return amountInAdjusted, amountOutAdjusted, nil
+
+	//scale := math.Pow10(8)
+	//return math.Round(amountInAdjusted*scale) / scale, math.Round(amountOutAdjusted*scale) / scale, nil
 }
 
 func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
@@ -261,6 +230,10 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 	costAmount, getAmount, err := TransferTokenAmount(trade.AmountIn, trade.AmountOut, poolInfo.CostTokenDecimals, poolInfo.GetTokenDecimals)
 	if err != nil {
 		return err
+	}
+
+	if costAmount == 0 || getAmount == 0 {
+		return fmt.Errorf("invalid trade amount in %s out %s", trade.AmountIn, trade.AmountOut)
 	}
 
 	return e.candleChart.AddCandle(storage.GeneratePairInfoId(e.chainId, protocolName, strings.TrimPrefix(trade.PoolAddress.Hex(), "0x")), trade.TradeTime, costAmount, getAmount)

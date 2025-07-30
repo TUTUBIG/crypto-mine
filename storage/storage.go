@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -288,12 +289,29 @@ func (cs *CandleChartKVStorage) Store(pairID string, interval time.Duration, can
 		return fmt.Errorf("candle data cannot be nil")
 	}
 
-	//TODO If there exist some lost candles, use 0 to take the position.Or front side should handle this gap.
-	cs.cache = append(cs.cache, *candle)
-
 	// Compose the key: pairID-interval-date
 	// Store whole candle, client will fetch this data only when the first time loading chart.
 	key := fmt.Sprintf("%s-%d-%s", pairID, int(interval.Seconds()), time.Unix(candle.Timestamp, 0).UTC().Format(time.DateOnly))
+
+	if len(cs.cache) == 0 {
+		data, err := cs.engine.Load(key)
+		if err != nil {
+			if !errors.Is(err, NotfoundError) {
+				return err
+			}
+			// empty
+		} else {
+			candles := make(CandleDataList, 0)
+			if err := candles.FromBytes(data); err != nil {
+				return err
+			}
+
+			cs.cache = candles
+		}
+	}
+
+	cs.cache = append(cs.cache, *candle)
+
 	if err := cs.engine.Store(key, cs.cache.ToBytes()); err != nil {
 		return err
 	}

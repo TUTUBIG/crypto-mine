@@ -97,7 +97,7 @@ func TestCloudflareDurable_Publish(t *testing.T) {
 	d := NewCloudflareDurable()
 	n := time.Now()
 	data := &RealtimeTradeData{
-		poolID:    "00000000",
+		poolID:    "12345",
 		AmountIn:  1000,
 		AmountOut: 500,
 		TradeTime: &n,
