@@ -22,8 +22,7 @@ type CandleData struct {
 	Timestamp  int64 // second
 }
 
-func (cd *CandleData) refresh(amountIn, amountOut float64) bool {
-	price := amountIn / amountOut
+func (cd *CandleData) refresh(amountIn, amountOut, price float64) bool {
 
 	cd.ClosePrice = price
 	if price > cd.HighPrice {
@@ -204,10 +203,12 @@ func (cdl *CandleDataList) FromBytes(data []byte) error {
 }
 
 type RealtimeTradeData struct {
-	poolID    string // ignore serialization
-	TradeTime *time.Time
-	AmountIn  float64
-	AmountOut float64
+	tokenAddress string
+	TradeTime    *time.Time
+	Price        float64
+	Amount       float64
+	AmountUSD    float64
+	Wrapper      bool
 }
 
 func (rd *RealtimeTradeData) ToBytes() ([]byte, error) {
@@ -370,12 +371,14 @@ func (cc *CandleChart) RegisterIntervalCandle(ic *IntervalCandleChart) *CandleCh
 	return cc
 }
 
-func (cc *CandleChart) AddCandle(poolId string, tradeTime *time.Time, amountIn, amountOut float64) error {
+func (cc *CandleChart) AddCandle(tokenAddress string, tradeTime *time.Time, amountIn, amountOut, price float64, wrapper bool) error {
 	cc.data <- &RealtimeTradeData{
-		poolID:    poolId,
-		TradeTime: tradeTime,
-		AmountIn:  amountIn,
-		AmountOut: amountOut,
+		tokenAddress: tokenAddress,
+		TradeTime:    tradeTime,
+		AmountUSD:    amountIn,
+		Amount:       amountOut,
+		Price:        price,
+		Wrapper:      wrapper,
 	}
 	return nil
 }
@@ -393,7 +396,7 @@ func (cc *CandleChart) StartAggregateCandleData() {
 			if err != nil {
 				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
 			}
-			if _, err := cc.publisher.Publish(tradeData.poolID, data); err != nil {
+			if _, err := cc.publisher.Publish(tradeData.tokenAddress, data); err != nil {
 				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
 			}
 			// Process each interval candle
@@ -401,35 +404,33 @@ func (cc *CandleChart) StartAggregateCandleData() {
 				// Calculate the start time for the current interval
 				if candle.lastStartTimestamp.Add(candle.interval).After(*tradeData.TradeTime) {
 					if candle.currentCandle == nil {
-						price := tradeData.AmountIn / tradeData.AmountOut
 						candle.currentCandle = &CandleData{
-							OpenPrice:  price,
-							ClosePrice: price,
-							HighPrice:  price,
-							LowPrice:   price,
-							VolumeIn:   tradeData.AmountIn,
-							VolumeOut:  tradeData.AmountOut,
+							OpenPrice:  tradeData.Price,
+							ClosePrice: tradeData.Price,
+							HighPrice:  tradeData.Price,
+							LowPrice:   tradeData.Price,
+							VolumeIn:   tradeData.AmountUSD,
+							VolumeOut:  tradeData.Amount,
 							Timestamp:  tradeData.TradeTime.Unix(),
 						}
 					} else {
-						candle.currentCandle.refresh(tradeData.AmountIn, tradeData.AmountOut)
+						candle.currentCandle.refresh(tradeData.AmountUSD, tradeData.Amount, tradeData.Price)
 					}
 					// Skip for larger intervals if it is before the smaller one
 					break
 				} else {
 					candle.lastStartTimestamp = tradeData.TradeTime
-					if err := candle.storage.Store(tradeData.poolID, candle.interval, candle.currentCandle); err != nil {
+					if err := candle.storage.Store(tradeData.tokenAddress, candle.interval, candle.currentCandle); err != nil {
 						slog.Error("store candle error", "error", err.Error(), "candle", candle.currentCandle)
 						break
 					}
-					price := tradeData.AmountIn / tradeData.AmountOut
 					newCandleData := CandleData{
-						OpenPrice:  price,
-						ClosePrice: price,
-						HighPrice:  price,
-						LowPrice:   price,
-						VolumeIn:   tradeData.AmountIn,
-						VolumeOut:  tradeData.AmountOut,
+						OpenPrice:  tradeData.Price,
+						ClosePrice: tradeData.Price,
+						HighPrice:  tradeData.Price,
+						LowPrice:   tradeData.Price,
+						VolumeIn:   tradeData.AmountUSD,
+						VolumeOut:  tradeData.Amount,
 						Timestamp:  tradeData.TradeTime.Unix(),
 					}
 					candle.currentCandle = &newCandleData

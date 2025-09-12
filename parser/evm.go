@@ -18,6 +18,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
+const minVolumeUSD = 1000
+
 type EvmEngine struct {
 	filter ethereum.FilterQuery
 	chains []*EVMChain
@@ -64,18 +66,22 @@ func (ee *EvmEngine) Stop() {
 }
 
 type EVMChain struct {
-	chainId     string
-	shutdown    chan struct{}
-	endpoint    string
-	wsEndpoint  string
-	ethClient   *ethclient.Client
-	wsClient    *ethclient.Client
-	subscriber  ethereum.Subscription
-	logs        chan types.Log
-	trades      chan *TradeInfo
-	poolInfo    *storage.PoolInfo
-	protocols   []DEXProtocol
-	candleChart *storage.CandleChart
+	chainId                  string
+	shutdown                 chan struct{}
+	endpoint                 string
+	wsEndpoint               string
+	ethClient                *ethclient.Client
+	wsClient                 *ethclient.Client
+	subscriber               ethereum.Subscription
+	logs                     chan types.Log
+	trades                   chan *TradeInfo
+	poolInfo                 *storage.PoolInfo
+	protocols                []DEXProtocol
+	candleChart              *storage.CandleChart
+	stableCoins              []common.Address
+	nativeCoinWrapper        common.Address
+	realtimeNativeTokenPrice float64
+	tokens                   map[common.Address]*storage.TokenInfo
 }
 
 func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string) (*EVMChain, error) {
@@ -223,7 +229,18 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 			GetTokenSymbol:    pi.GetTokenSymbol,
 			GetTokenDecimals:  pi.GetTokenDecimals,
 		}
+
+		// check if it is a standard tokens pair
+		if !e.standardTokenHelper([2]common.Address{common.HexToAddress(poolInfo.CostTokenAddress), common.HexToAddress(poolInfo.GetTokenAddress)}) {
+			slog.Debug("Skip pool", "pool name", poolInfo.PoolName)
+			poolInfo.Skip = true
+		}
+
 		e.poolInfo.AddPool(poolInfo)
+	}
+
+	if poolInfo.Skip {
+		return nil
 	}
 
 	// Calculate price with decimals
@@ -236,7 +253,95 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 		return fmt.Errorf("invalid trade amount in %s out %s", trade.AmountIn, trade.AmountOut)
 	}
 
-	return e.candleChart.AddCandle(storage.GeneratePairInfoId(e.chainId, protocolName, strings.TrimPrefix(trade.PoolAddress.Hex(), "0x")), trade.TradeTime, costAmount, getAmount)
+	var tokenPrice float64
+	var tokenAddress string
+	var wrapper bool
+
+	for _, s := range e.stableCoins {
+		if s.Cmp(common.HexToAddress(poolInfo.CostTokenAddress)) == 0 {
+			token := e.poolInfo.FindToken(common.HexToAddress(poolInfo.GetTokenAddress))
+			if token == nil {
+				e.poolInfo.AddToken(&storage.TokenInfo{
+					Address:   common.HexToAddress(poolInfo.GetTokenAddress),
+					VolumeUSD: costAmount,
+				})
+			} else if token.OnlyCache {
+				token.VolumeUSD += costAmount
+				if token.VolumeUSD > minVolumeUSD {
+					e.poolInfo.StoreToken(token)
+					token.OnlyCache = false
+
+					tokenAddress = token.Address.String()
+					tokenPrice = costAmount / getAmount
+
+					if e.nativeCoinWrapper.Cmp(token.Address) == 0 {
+						e.realtimeNativeTokenPrice = tokenPrice
+					}
+
+					goto end
+				}
+			}
+		} else if s.Cmp(common.HexToAddress(poolInfo.GetTokenAddress)) == 0 {
+			token := e.poolInfo.FindToken(common.HexToAddress(poolInfo.CostTokenAddress))
+			if token == nil {
+				e.poolInfo.AddToken(&storage.TokenInfo{
+					Address:   common.HexToAddress(poolInfo.CostTokenAddress),
+					VolumeUSD: getAmount,
+				})
+			} else if token.OnlyCache {
+				token.VolumeUSD += getAmount
+				if token.VolumeUSD > minVolumeUSD {
+					e.poolInfo.StoreToken(token)
+					token.OnlyCache = false
+
+					tokenAddress = token.Address.String()
+					tokenPrice = getAmount / costAmount
+
+					if e.nativeCoinWrapper.Cmp(token.Address) == 0 {
+						e.realtimeNativeTokenPrice = tokenPrice
+					}
+
+					goto end
+				}
+			}
+		}
+	}
+
+	if e.realtimeNativeTokenPrice == 0 {
+		return nil
+	}
+
+	if common.HexToAddress(poolInfo.CostTokenAddress).Cmp(e.nativeCoinWrapper) == 0 {
+		tokenAddress = poolInfo.GetTokenAddress
+		tokenPrice = costAmount / getAmount * e.realtimeNativeTokenPrice
+		wrapper = true
+	} else if common.HexToAddress(poolInfo.GetTokenAddress).Cmp(e.nativeCoinWrapper) == 0 {
+		tokenAddress = poolInfo.CostTokenAddress
+		tokenPrice = getAmount / tokenPrice * e.realtimeNativeTokenPrice
+		wrapper = true
+	}
+
+end:
+	slog.Debug("Token price refresh", "address", tokenAddress, "price", tokenPrice)
+	return e.candleChart.AddCandle(tokenAddress, trade.TradeTime, costAmount, getAmount, tokenPrice, wrapper)
+}
+
+func (e *EVMChain) standardTokenHelper(tokenPair [2]common.Address) bool {
+	for _, t := range tokenPair {
+		if e.nativeCoinWrapper.Cmp(t) == 0 {
+			return true
+		}
+	}
+
+	for _, t := range tokenPair {
+		for _, s := range e.stableCoins {
+			if t.Cmp(s) == 0 {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func (e *EVMChain) Stop() {

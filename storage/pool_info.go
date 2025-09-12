@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 const (
@@ -22,6 +25,7 @@ type PairInfo struct {
 	GetTokenAddress   string `json:"get_token_address"`
 	GetTokenSymbol    string `json:"get_token_symbol"`
 	GetTokenDecimals  int64  `json:"get_token_decimals"`
+	Skip              bool   `json:"skip"`
 }
 
 func (pi *PairInfo) ID() string {
@@ -32,13 +36,23 @@ func GeneratePairInfoId(chainId, protocolName, poolAddress string) string {
 	return fmt.Sprintf("%s-%s-%s", chainId, protocolName, strings.TrimPrefix(poolAddress, "0x"))
 }
 
+type TokenInfo struct {
+	Address   common.Address
+	VolumeUSD float64
+	OnlyCache bool
+}
+
 type PoolInfo struct {
 	Pairs     map[string]*PairInfo
 	db        *CloudflareD1
 	fetchDone bool
+	tokens    map[common.Address]*TokenInfo
+	locker    sync.Mutex
 }
 
 func (pi *PoolInfo) AddPool(pool *PairInfo) {
+	pi.locker.Lock()
+	defer pi.locker.Unlock()
 	slog.Info("Add new pool", "id", pool.ID())
 	pi.Pairs[pool.ID()] = pool
 	_, err := pi.db.Insert(pool)
@@ -97,6 +111,46 @@ func (pi *PoolInfo) FindPool(chainId, protocolName, poolAddress string) *PairInf
 		}
 	}
 	return p
+}
+
+func (pi *PoolInfo) AddToken(token *TokenInfo) {
+	pi.locker.Lock()
+	defer pi.locker.Unlock()
+	token.OnlyCache = true
+	pi.tokens[token.Address] = token
+}
+
+func (pi *PoolInfo) StoreToken(token *TokenInfo) {
+
+	slog.Info("Add new token", "address", token.Address)
+
+	_, err := pi.db.InsertToken(token)
+	if err != nil {
+		slog.Error("Failed to insert token into database", "err", err, "token address", token.Address.Hex())
+		return
+	}
+}
+
+func (pi *PoolInfo) FindToken(tokenAddress common.Address) *TokenInfo {
+	t, f := pi.tokens[tokenAddress]
+	if !f && !pi.fetchDone {
+		t = pi.LoadSingleToken(tokenAddress.Hex())
+		if t != nil {
+			t.OnlyCache = false
+			pi.tokens[tokenAddress] = t
+		}
+	}
+	return t
+}
+
+func (pi *PoolInfo) LoadSingleToken(tokenAddress string) *TokenInfo {
+	var token *TokenInfo
+	err := pi.db.Get(chainId, protocolName, poolAddress, &pool)
+	if err != nil {
+		slog.Error("Failed to load pools from database", "err", err, "pool", poolAddress, "chainId", chainId, "protocolName", protocolName)
+		return nil
+	}
+	return pool
 }
 
 func NewPoolInfo(db *CloudflareD1) *PoolInfo {

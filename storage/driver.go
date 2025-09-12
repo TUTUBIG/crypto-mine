@@ -267,6 +267,34 @@ func (c *CloudflareD1) Insert(object interface{}) (bool, error) {
 	return true, nil
 }
 
+func (c *CloudflareD1) InsertToken(object interface{}) (bool, error) {
+	data, err := json.Marshal(object)
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal object: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", c.baseURL+"/tokens/add", bytes.NewBuffer(data))
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("remote API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return true, nil
+}
+
 func (c *CloudflareD1) List(pageIndex, pageSize int, object interface{}) error {
 	// TODO: Check if object is a pointer
 
@@ -337,6 +365,42 @@ func (c *CloudflareD1) Get(chainId, protocolName, poolAddress string, object int
 	return nil
 }
 
+func (c *CloudflareD1) GetToken(tokenAddress string, object interface{}) error {
+	// TODO: Check if object is a pointer
+
+	url := fmt.Sprintf("%s/token?address=%s", c.baseURL, tokenAddress)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("remote API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// TODO: Could be null
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(object); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return nil
+}
+
 type CloudflareDurable struct {
 	baseURL    string
 	token      string
@@ -353,14 +417,14 @@ func NewCloudflareDurable() *CloudflareDurable {
 	}
 }
 
-func (c *CloudflareDurable) Publish(poolId string, data []byte) (bool, error) {
+func (c *CloudflareDurable) Publish(tokenAddress string, data []byte) (bool, error) {
 	req, err := http.NewRequest("POST", c.baseURL+"/publish", bytes.NewBuffer(data))
 	if err != nil {
 		return false, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/binary")
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Customized-Pool-Id", poolId)
+	req.Header.Set("Customized-Token-Address", tokenAddress)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
