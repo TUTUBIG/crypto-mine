@@ -145,12 +145,12 @@ func (pi *PoolInfo) FindToken(tokenAddress common.Address) *TokenInfo {
 
 func (pi *PoolInfo) LoadSingleToken(tokenAddress string) *TokenInfo {
 	var token *TokenInfo
-	err := pi.db.Get(chainId, protocolName, poolAddress, &pool)
+	err := pi.db.GetToken(tokenAddress, token)
 	if err != nil {
-		slog.Error("Failed to load pools from database", "err", err, "pool", poolAddress, "chainId", chainId, "protocolName", protocolName)
+		slog.Error("Failed to load token from database", "err", err, "token address", tokenAddress)
 		return nil
 	}
-	return pool
+	return token
 }
 
 func NewPoolInfo(db *CloudflareD1) *PoolInfo {
