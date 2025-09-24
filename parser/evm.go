@@ -34,7 +34,7 @@ func NewEVMEngine() *EvmEngine {
 		Topics: [][]common.Hash{
 			{
 				common.HexToHash(swapV3Topic1),
-				common.HexToHash(swapV3Topic1),
+				//common.HexToHash(swapV3Topic2),
 			},
 		},
 	}
@@ -112,6 +112,12 @@ func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string) 
 		ethClient:   rpcClient,
 		wsClient:    wsClient,
 	}, nil
+}
+
+func (e *EVMChain) RegisterStableCoin(nativeWrapper common.Address, stableCoins []common.Address) *EVMChain {
+	e.stableCoins = append(e.stableCoins, stableCoins...)
+	e.nativeCoinWrapper = nativeWrapper
+	return e
 }
 
 func (e *EVMChain) RegisterProtocol(protocol DEXProtocol) *EVMChain {
@@ -259,22 +265,25 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 
 	for _, s := range e.stableCoins {
 		if s.Cmp(common.HexToAddress(poolInfo.CostTokenAddress)) == 0 {
-			token := e.poolInfo.FindToken(common.HexToAddress(poolInfo.GetTokenAddress))
+			token := e.poolInfo.FindToken(e.chainId, common.HexToAddress(poolInfo.GetTokenAddress))
 			if token == nil {
 				e.poolInfo.AddToken(&storage.TokenInfo{
-					Address:   common.HexToAddress(poolInfo.GetTokenAddress),
-					VolumeUSD: costAmount,
+					ChainId:        e.chainId,
+					TokenAddress:   poolInfo.GetTokenAddress,
+					DailyVolumeUSD: costAmount,
 				})
 			} else if token.OnlyCache {
-				token.VolumeUSD += costAmount
-				if token.VolumeUSD > minVolumeUSD {
+				token.DailyVolumeUSD += costAmount
+				if token.DailyVolumeUSD > minVolumeUSD {
+					token.TokenName, token.TokenSymbol, token.Decimals = fetchTokenInfo(e.ethClient, common.HexToAddress(token.TokenAddress))
+
 					e.poolInfo.StoreToken(token)
 					token.OnlyCache = false
 
-					tokenAddress = token.Address.String()
+					tokenAddress = token.TokenAddress
 					tokenPrice = costAmount / getAmount
 
-					if e.nativeCoinWrapper.Cmp(token.Address) == 0 {
+					if e.nativeCoinWrapper.Cmp(common.HexToAddress(token.TokenAddress)) == 0 {
 						e.realtimeNativeTokenPrice = tokenPrice
 					}
 
@@ -282,22 +291,25 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 				}
 			}
 		} else if s.Cmp(common.HexToAddress(poolInfo.GetTokenAddress)) == 0 {
-			token := e.poolInfo.FindToken(common.HexToAddress(poolInfo.CostTokenAddress))
+			token := e.poolInfo.FindToken(e.chainId, common.HexToAddress(poolInfo.CostTokenAddress))
 			if token == nil {
 				e.poolInfo.AddToken(&storage.TokenInfo{
-					Address:   common.HexToAddress(poolInfo.CostTokenAddress),
-					VolumeUSD: getAmount,
+					TokenAddress:   poolInfo.CostTokenAddress,
+					DailyVolumeUSD: getAmount,
 				})
 			} else if token.OnlyCache {
-				token.VolumeUSD += getAmount
-				if token.VolumeUSD > minVolumeUSD {
+				token.DailyVolumeUSD += getAmount
+				if token.DailyVolumeUSD > minVolumeUSD {
+
+					token.TokenName, token.TokenSymbol, token.Decimals = fetchTokenInfo(e.ethClient, common.HexToAddress(token.TokenAddress))
+
 					e.poolInfo.StoreToken(token)
 					token.OnlyCache = false
 
-					tokenAddress = token.Address.String()
+					tokenAddress = token.TokenAddress
 					tokenPrice = getAmount / costAmount
 
-					if e.nativeCoinWrapper.Cmp(token.Address) == 0 {
+					if e.nativeCoinWrapper.Cmp(common.HexToAddress(token.TokenAddress)) == 0 {
 						e.realtimeNativeTokenPrice = tokenPrice
 					}
 
@@ -324,6 +336,81 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 end:
 	slog.Debug("Token price refresh", "address", tokenAddress, "price", tokenPrice)
 	return e.candleChart.AddCandle(tokenAddress, trade.TradeTime, costAmount, getAmount, tokenPrice, wrapper)
+}
+
+func fetchTokenInfo(c *ethclient.Client, tokenAddress common.Address) (name, symbol string, decimals uint8) {
+	tokenABI, err := abi.JSON(strings.NewReader(erc20TokenABI))
+	if err != nil {
+		log.Printf("Failed to parse token ABI: %v", err)
+		return
+	}
+
+	// Get token name
+	data, err := tokenABI.Pack("name")
+	if err != nil {
+		log.Printf("Failed to pack name data: %v", err)
+		return
+	}
+
+	msg := ethereum.CallMsg{
+		To:   &tokenAddress,
+		Data: data,
+	}
+
+	result, err := c.CallContract(context.Background(), msg, nil)
+	if err != nil {
+		log.Printf("Failed to call name method: %v", err)
+		return
+	}
+
+	err = tokenABI.UnpackIntoInterface(&name, "name", result)
+	if err != nil {
+		log.Printf("Failed to unpack name result: %v", err)
+		return
+	}
+
+	// Get token symbol
+	data, err = tokenABI.Pack("symbol")
+	if err != nil {
+		log.Printf("Failed to pack symbol data: %v", err)
+		return
+	}
+
+	msg.Data = data
+	result, err = c.CallContract(context.Background(), msg, nil)
+	if err != nil {
+		log.Printf("Failed to call symbol method: %v", err)
+		return
+	}
+
+	err = tokenABI.UnpackIntoInterface(&symbol, "symbol", result)
+	if err != nil {
+		log.Printf("Failed to unpack symbol result: %v", err)
+		return
+	}
+
+	// Get token decimals
+	data, err = tokenABI.Pack("decimals")
+	if err != nil {
+		log.Printf("Failed to pack decimals data: %v", err)
+		return
+	}
+
+	msg.Data = data
+	result, err = c.CallContract(context.Background(), msg, nil)
+	if err != nil {
+		log.Printf("Failed to call decimals method: %v", err)
+		return
+	}
+
+	err = tokenABI.UnpackIntoInterface(&decimals, "decimals", result)
+	if err != nil {
+		log.Printf("Failed to unpack decimals result: %v", err)
+		return
+	}
+
+	slog.Debug("Token info fetched", "address", tokenAddress, "name", name, "symbol", symbol, "decimals", decimals)
+	return
 }
 
 func (e *EVMChain) standardTokenHelper(tokenPair [2]common.Address) bool {
@@ -366,13 +453,13 @@ type DEXProtocol interface {
 
 const (
 	swapV3Topic1 = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
-	swapV3Topic2 = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83"
+	// swapV3Topic2 = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83"
 )
 
 const (
 	swapV3PoolABI = `[{"inputs":[],"stateMutability":"nonpayable","type":"constructor"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"owner","type":"address"},{"indexed":true,"internalType":"int24","name":"tickLower","type":"int24"},{"indexed":true,"internalType":"int24","name":"tickUpper","type":"int24"},{"indexed":false,"internalType":"uint128","name":"amount","type":"uint128"},{"indexed":false,"internalType":"uint256","name":"amount0","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"amount1","type":"uint256"}],"name":"Burn","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"owner","type":"address"},{"indexed":false,"internalType":"address","name":"recipient","type":"address"},{"indexed":true,"internalType":"int24","name":"tickLower","type":"int24"},{"indexed":true,"internalType":"int24","name":"tickUpper","type":"int24"},{"indexed":false,"internalType":"uint128","name":"amount0","type":"uint128"},{"indexed":false,"internalType":"uint128","name":"amount1","type":"uint128"}],"name":"Collect","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"sender","type":"address"},{"indexed":true,"internalType":"address","name":"recipient","type":"address"},{"indexed":false,"internalType":"uint128","name":"amount0","type":"uint128"},{"indexed":false,"internalType":"uint128","name":"amount1","type":"uint128"}],"name":"CollectProtocol","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"sender","type":"address"},{"indexed":true,"internalType":"address","name":"recipient","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount0","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"amount1","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"paid0","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"paid1","type":"uint256"}],"name":"Flash","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"uint16","name":"observationCardinalityNextOld","type":"uint16"},{"indexed":false,"internalType":"uint16","name":"observationCardinalityNextNew","type":"uint16"}],"name":"IncreaseObservationCardinalityNext","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"uint160","name":"sqrtPriceX96","type":"uint160"},{"indexed":false,"internalType":"int24","name":"tick","type":"int24"}],"name":"Initialize","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"sender","type":"address"},{"indexed":true,"internalType":"address","name":"owner","type":"address"},{"indexed":true,"internalType":"int24","name":"tickLower","type":"int24"},{"indexed":true,"internalType":"int24","name":"tickUpper","type":"int24"},{"indexed":false,"internalType":"uint128","name":"amount","type":"uint128"},{"indexed":false,"internalType":"uint256","name":"amount0","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"amount1","type":"uint256"}],"name":"Mint","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"uint8","name":"feeProtocol0Old","type":"uint8"},{"indexed":false,"internalType":"uint8","name":"feeProtocol1Old","type":"uint8"},{"indexed":false,"internalType":"uint8","name":"feeProtocol0New","type":"uint8"},{"indexed":false,"internalType":"uint8","name":"feeProtocol1New","type":"uint8"}],"name":"SetFeeProtocol","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"sender","type":"address"},{"indexed":true,"internalType":"address","name":"recipient","type":"address"},{"indexed":false,"internalType":"int256","name":"amount0","type":"int256"},{"indexed":false,"internalType":"int256","name":"amount1","type":"int256"},{"indexed":false,"internalType":"uint160","name":"sqrtPriceX96","type":"uint160"},{"indexed":false,"internalType":"uint128","name":"liquidity","type":"uint128"},{"indexed":false,"internalType":"int24","name":"tick","type":"int24"}],"name":"Swap","type":"event"},{"inputs":[{"internalType":"int24","name":"tickLower","type":"int24"},{"internalType":"int24","name":"tickUpper","type":"int24"},{"internalType":"uint128","name":"amount","type":"uint128"}],"name":"burn","outputs":[{"internalType":"uint256","name":"amount0","type":"uint256"},{"internalType":"uint256","name":"amount1","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"recipient","type":"address"},{"internalType":"int24","name":"tickLower","type":"int24"},{"internalType":"int24","name":"tickUpper","type":"int24"},{"internalType":"uint128","name":"amount0Requested","type":"uint128"},{"internalType":"uint128","name":"amount1Requested","type":"uint128"}],"name":"collect","outputs":[{"internalType":"uint128","name":"amount0","type":"uint128"},{"internalType":"uint128","name":"amount1","type":"uint128"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"recipient","type":"address"},{"internalType":"uint128","name":"amount0Requested","type":"uint128"},{"internalType":"uint128","name":"amount1Requested","type":"uint128"}],"name":"collectProtocol","outputs":[{"internalType":"uint128","name":"amount0","type":"uint128"},{"internalType":"uint128","name":"amount1","type":"uint128"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"factory","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"fee","outputs":[{"internalType":"uint24","name":"","type":"uint24"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"feeGrowthGlobal0X128","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"feeGrowthGlobal1X128","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"recipient","type":"address"},{"internalType":"uint256","name":"amount0","type":"uint256"},{"internalType":"uint256","name":"amount1","type":"uint256"},{"internalType":"bytes","name":"data","type":"bytes"}],"name":"flash","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint16","name":"observationCardinalityNext","type":"uint16"}],"name":"increaseObservationCardinalityNext","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint160","name":"sqrtPriceX96","type":"uint160"}],"name":"initialize","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"liquidity","outputs":[{"internalType":"uint128","name":"","type":"uint128"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"maxLiquidityPerTick","outputs":[{"internalType":"uint128","name":"","type":"uint128"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"recipient","type":"address"},{"internalType":"int24","name":"tickLower","type":"int24"},{"internalType":"int24","name":"tickUpper","type":"int24"},{"internalType":"uint128","name":"amount","type":"uint128"},{"internalType":"bytes","name":"data","type":"bytes"}],"name":"mint","outputs":[{"internalType":"uint256","name":"amount0","type":"uint256"},{"internalType":"uint256","name":"amount1","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"observations","outputs":[{"internalType":"uint32","name":"blockTimestamp","type":"uint32"},{"internalType":"int56","name":"tickCumulative","type":"int56"},{"internalType":"uint160","name":"secondsPerLiquidityCumulativeX128","type":"uint160"},{"internalType":"bool","name":"initialized","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint32[]","name":"secondsAgos","type":"uint32[]"}],"name":"observe","outputs":[{"internalType":"int56[]","name":"tickCumulatives","type":"int56[]"},{"internalType":"uint160[]","name":"secondsPerLiquidityCumulativeX128s","type":"uint160[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"name":"positions","outputs":[{"internalType":"uint128","name":"liquidity","type":"uint128"},{"internalType":"uint256","name":"feeGrowthInside0LastX128","type":"uint256"},{"internalType":"uint256","name":"feeGrowthInside1LastX128","type":"uint256"},{"internalType":"uint128","name":"tokensOwed0","type":"uint128"},{"internalType":"uint128","name":"tokensOwed1","type":"uint128"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"protocolFees","outputs":[{"internalType":"uint128","name":"token0","type":"uint128"},{"internalType":"uint128","name":"token1","type":"uint128"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint8","name":"feeProtocol0","type":"uint8"},{"internalType":"uint8","name":"feeProtocol1","type":"uint8"}],"name":"setFeeProtocol","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"slot0","outputs":[{"internalType":"uint160","name":"sqrtPriceX96","type":"uint160"},{"internalType":"int24","name":"tick","type":"int24"},{"internalType":"uint16","name":"observationIndex","type":"uint16"},{"internalType":"uint16","name":"observationCardinality","type":"uint16"},{"internalType":"uint16","name":"observationCardinalityNext","type":"uint16"},{"internalType":"uint8","name":"feeProtocol","type":"uint8"},{"internalType":"bool","name":"unlocked","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"int24","name":"tickLower","type":"int24"},{"internalType":"int24","name":"tickUpper","type":"int24"}],"name":"snapshotCumulativesInside","outputs":[{"internalType":"int56","name":"tickCumulativeInside","type":"int56"},{"internalType":"uint160","name":"secondsPerLiquidityInsideX128","type":"uint160"},{"internalType":"uint32","name":"secondsInside","type":"uint32"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"recipient","type":"address"},{"internalType":"bool","name":"zeroForOne","type":"bool"},{"internalType":"int256","name":"amountSpecified","type":"int256"},{"internalType":"uint160","name":"sqrtPriceLimitX96","type":"uint160"},{"internalType":"bytes","name":"data","type":"bytes"}],"name":"swap","outputs":[{"internalType":"int256","name":"amount0","type":"int256"},{"internalType":"int256","name":"amount1","type":"int256"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"int16","name":"","type":"int16"}],"name":"tickBitmap","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"tickSpacing","outputs":[{"internalType":"int24","name":"","type":"int24"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"tickDistance","outputs":[{"internalType":"int24","name":"","type":"int24"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"int24","name":"","type":"int24"}],"name":"ticks","outputs":[{"internalType":"uint128","name":"liquidityGross","type":"uint128"},{"internalType":"int128","name":"liquidityNet","type":"int128"},{"internalType":"uint256","name":"feeGrowthOutside0X128","type":"uint256"},{"internalType":"uint256","name":"feeGrowthOutside1X128","type":"uint256"},{"internalType":"int56","name":"tickCumulativeOutside","type":"int56"},{"internalType":"uint160","name":"secondsPerLiquidityOutsideX128","type":"uint160"},{"internalType":"uint32","name":"secondsOutside","type":"uint32"},{"internalType":"bool","name":"initialized","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"token0","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"token1","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"}]`
 
-	erc20TokenABI = `[{"constant":true,"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"type":"function"},{"constant":true,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"}]`
+	erc20TokenABI = `[{"constant":true,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"type":"function"},{"constant":true,"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"type":"function"},{"constant":true,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"}]`
 )
 
 var erc20ABI *abi.ABI
@@ -398,7 +485,7 @@ func NewUniSwapV3() *UniSwapV3 {
 	return &UniSwapV3{
 		swapTopic: []common.Hash{
 			common.HexToHash(swapV3Topic1),
-			common.HexToHash(swapV3Topic2),
+			//	common.HexToHash(swapV3Topic2),
 		},
 		swapPoolABI: &a,
 	}

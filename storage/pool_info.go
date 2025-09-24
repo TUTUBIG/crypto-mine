@@ -33,20 +33,33 @@ func (pi *PairInfo) ID() string {
 }
 
 func GeneratePairInfoId(chainId, protocolName, poolAddress string) string {
-	return fmt.Sprintf("%s-%s-%s", chainId, protocolName, strings.TrimPrefix(poolAddress, "0x"))
+	return fmt.Sprintf("%s-%s-%s", chainId, protocolName, strings.TrimPrefix(strings.ToLower(poolAddress), "0x"))
 }
 
 type TokenInfo struct {
-	Address   common.Address
-	VolumeUSD float64
-	OnlyCache bool
+	ChainId        string  `json:"chain_id"`
+	TokenAddress   string  `json:"token_address"`
+	TokenSymbol    string  `json:"token_symbol"`
+	TokenName      string  `json:"token_name"`
+	Decimals       uint8   `json:"decimals"`
+	IconUrl        string  `json:"icon_url"`
+	DailyVolumeUSD float64 `json:"daily_volume_usd"`
+	OnlyCache      bool
+}
+
+func (ti *TokenInfo) ID() string {
+	return GenerateTokenId(ti.ChainId, ti.TokenAddress)
+}
+
+func GenerateTokenId(chainId, tokenAddress string) string {
+	return fmt.Sprintf("%s-%s", chainId, strings.TrimPrefix("0x", strings.ToLower(tokenAddress)))
 }
 
 type PoolInfo struct {
 	Pairs     map[string]*PairInfo
 	db        *CloudflareD1
 	fetchDone bool
-	tokens    map[common.Address]*TokenInfo
+	tokens    map[string]*TokenInfo
 	locker    sync.Mutex
 }
 
@@ -117,27 +130,27 @@ func (pi *PoolInfo) AddToken(token *TokenInfo) {
 	pi.locker.Lock()
 	defer pi.locker.Unlock()
 	token.OnlyCache = true
-	pi.tokens[token.Address] = token
+	pi.tokens[token.ID()] = token
 }
 
 func (pi *PoolInfo) StoreToken(token *TokenInfo) {
 
-	slog.Info("Add new token", "address", token.Address)
+	slog.Info("Add new token", "token symbol", token.TokenSymbol, "token address", token.TokenAddress)
 
 	_, err := pi.db.InsertToken(token)
 	if err != nil {
-		slog.Error("Failed to insert token into database", "err", err, "token address", token.Address.Hex())
+		slog.Error("Failed to insert token into database", "err", err, "token address", token.TokenAddress)
 		return
 	}
 }
 
-func (pi *PoolInfo) FindToken(tokenAddress common.Address) *TokenInfo {
-	t, f := pi.tokens[tokenAddress]
+func (pi *PoolInfo) FindToken(chainId string, tokenAddress common.Address) *TokenInfo {
+	t, f := pi.tokens[GenerateTokenId(chainId, tokenAddress.Hex())]
 	if !f && !pi.fetchDone {
 		t = pi.LoadSingleToken(tokenAddress.Hex())
 		if t != nil {
 			t.OnlyCache = false
-			pi.tokens[tokenAddress] = t
+			pi.tokens[GenerateTokenId(chainId, tokenAddress.Hex())] = t
 		}
 	}
 	return t
@@ -153,6 +166,36 @@ func (pi *PoolInfo) LoadSingleToken(tokenAddress string) *TokenInfo {
 	return token
 }
 
+func (pi *PoolInfo) AsyncLoadTokens() {
+	go func() {
+		defer func() {
+			pi.fetchDone = true
+		}()
+		pageIndex := 1
+		pageSize := 300
+		for {
+			token := make([]*TokenInfo, 0)
+			err := pi.db.ListToken(pageIndex, pageSize, &token)
+			if err != nil {
+				slog.Error("Failed to load pools from database", "err", err, "page", pageIndex)
+				panic(err)
+			}
+			if len(token) == 0 {
+				return
+			}
+			for _, t := range token {
+				pi.tokens[t.ID()] = t
+			}
+			if len(token) < pageSize {
+				return
+			}
+			pageIndex++
+		}
+	}()
+	slog.Info("Tokens Info loading... Waiting for 10 seconds")
+	time.Sleep(10 * time.Second)
+}
+
 func NewPoolInfo(db *CloudflareD1) *PoolInfo {
-	return &PoolInfo{db: db, Pairs: make(map[string]*PairInfo)}
+	return &PoolInfo{db: db, Pairs: make(map[string]*PairInfo), tokens: make(map[string]*TokenInfo)}
 }

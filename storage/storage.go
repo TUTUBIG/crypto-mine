@@ -230,13 +230,13 @@ func (rd *RealtimeTradeData) ToBytes() ([]byte, error) {
 	buf = append(buf, timeBytes...)
 
 	// Serialize AmountIn (float64)
-	amountInBits := *(*uint64)(unsafe.Pointer(&rd.AmountIn))
+	amountInBits := *(*uint64)(unsafe.Pointer(&rd.AmountUSD))
 	for i := 0; i < 8; i++ {
 		buf = append(buf, byte(amountInBits>>(8*i)))
 	}
 
 	// Serialize AmountOut (float64)
-	amountOutBits := *(*uint64)(unsafe.Pointer(&rd.AmountOut))
+	amountOutBits := *(*uint64)(unsafe.Pointer(&rd.Amount))
 	for i := 0; i < 8; i++ {
 		buf = append(buf, byte(amountOutBits>>(8*i)))
 	}

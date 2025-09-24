@@ -273,7 +273,7 @@ func (c *CloudflareD1) InsertToken(object interface{}) (bool, error) {
 		return false, fmt.Errorf("failed to marshal object: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", c.baseURL+"/tokens/add", bytes.NewBuffer(data))
+	req, err := http.NewRequest("POST", c.baseURL+"/tokens", bytes.NewBuffer(data))
 	if err != nil {
 		return false, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -299,6 +299,40 @@ func (c *CloudflareD1) List(pageIndex, pageSize int, object interface{}) error {
 	// TODO: Check if object is a pointer
 
 	url := fmt.Sprintf("%s/pools?page=%d&pageSize=%d", c.baseURL, pageIndex, pageSize)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("remote API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(object); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return nil
+}
+
+func (c *CloudflareD1) ListToken(pageIndex, pageSize int, object interface{}) error {
+	// TODO: Check if object is a pointer
+
+	url := fmt.Sprintf("%s/tokens?page=%d&pageSize=%d", c.baseURL, pageIndex, pageSize)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
