@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +19,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
-const minVolumeUSD = 1000
+const minVolumeUSD = 1
+const precision = 1e4
 
 type EvmEngine struct {
 	filter ethereum.FilterQuery
@@ -114,9 +116,16 @@ func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string) 
 	}, nil
 }
 
-func (e *EVMChain) RegisterStableCoin(nativeWrapper common.Address, stableCoins []common.Address) *EVMChain {
+func (e *EVMChain) RegisterStableCoin(nativeWrapper common.Address, nativePrice string, stableCoins []common.Address) *EVMChain {
 	e.stableCoins = append(e.stableCoins, stableCoins...)
 	e.nativeCoinWrapper = nativeWrapper
+	if nativePrice != "" {
+		np, err := strconv.ParseFloat(nativePrice, 64)
+		if err != nil {
+			panic(err)
+		}
+		e.realtimeNativeTokenPrice = np
+	}
 	return e
 }
 
@@ -183,32 +192,32 @@ func (e *EVMChain) handleProtocol(log *types.Log, protocol DEXProtocol) error {
 	return nil
 }
 
-func TransferTokenAmount(amountIn, amountOut *big.Int, tokenInDecimals, tokenOutDecimals int64) (float64, float64, error) {
+func TransferTokenAmount(amount0, amount1 *big.Int, token0Decimals, token1Decimals uint8) (float64, float64, error) {
 	// Validate inputs
-	if amountIn == nil || amountOut == nil {
+	if amount0 == nil || amount1 == nil {
 		return 0, 0, fmt.Errorf("amounts cannot be nil")
 	}
-	if amountIn.Cmp(big.NewInt(0)) <= 0 {
-		return 0, 0, fmt.Errorf("amountIn must be positive")
+	if amount0.Cmp(big.NewInt(0)) <= 0 {
+		return 0, 0, fmt.Errorf("amount0 must be positive")
 	}
-	if amountOut.Cmp(big.NewInt(0)) <= 0 {
-		return 0, 0, fmt.Errorf("amountOut must be positive")
+	if amount1.Cmp(big.NewInt(0)) <= 0 {
+		return 0, 0, fmt.Errorf("amount1 must be positive")
 	}
-	if tokenInDecimals < 0 || tokenOutDecimals < 0 {
+	if token0Decimals < 0 || token1Decimals < 0 {
 		return 0, 0, fmt.Errorf("decimals cannot be negative")
 	}
 
-	amountInFloat := new(big.Float).SetInt(amountIn)
-	amountOutFloat := new(big.Float).SetInt(amountOut)
+	amount0Float := new(big.Float).SetInt(amount0)
+	amount1Float := new(big.Float).SetInt(amount1)
 
 	// Adjust for decimals
-	costTokenDecimals10 := new(big.Float).SetFloat64(math.Pow10(int(tokenInDecimals)))
-	getTokenDecimals10 := new(big.Float).SetFloat64(math.Pow10(int(tokenOutDecimals)))
+	token0Decimals10 := new(big.Float).SetFloat64(math.Pow10(int(token0Decimals)))
+	token1Decimals10 := new(big.Float).SetFloat64(math.Pow10(int(token1Decimals)))
 
-	amountInAdjusted, _ := new(big.Float).Quo(amountInFloat, costTokenDecimals10).Float64()
-	amountOutAdjusted, _ := new(big.Float).Quo(amountOutFloat, getTokenDecimals10).Float64()
+	amount0Adjusted, _ := new(big.Float).Quo(amount0Float, token0Decimals10).Float64()
+	amount1Adjusted, _ := new(big.Float).Quo(amount1Float, token1Decimals10).Float64()
 
-	return amountInAdjusted, amountOutAdjusted, nil
+	return amount0Adjusted, amount1Adjusted, nil
 
 	//scale := math.Pow10(8)
 	//return math.Round(amountInAdjusted*scale) / scale, math.Round(amountOutAdjusted*scale) / scale, nil
@@ -224,20 +233,20 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 			return err
 		}
 		poolInfo = &storage.PairInfo{
-			ChainId:           e.chainId,
-			Protocol:          protocolName,
-			PoolAddress:       trade.PoolAddress.Hex(),
-			PoolName:          pi.PoolName,
-			CostTokenAddress:  pi.CostTokenAddress,
-			CostTokenSymbol:   pi.CostTokenSymbol,
-			CostTokenDecimals: pi.CostTokenDecimals,
-			GetTokenAddress:   pi.GetTokenAddress,
-			GetTokenSymbol:    pi.GetTokenSymbol,
-			GetTokenDecimals:  pi.GetTokenDecimals,
+			ChainId:        e.chainId,
+			Protocol:       protocolName,
+			PoolAddress:    trade.PoolAddress.Hex(),
+			PoolName:       pi.PoolName,
+			Token0Address:  pi.Token0Address,
+			Token0Symbol:   pi.Token0Symbol,
+			Token0Decimals: pi.Token0Decimals,
+			Token1Address:  pi.Token1Address,
+			Token1Symbol:   pi.Token1Symbol,
+			Token1Decimals: pi.Token1Decimals,
 		}
 
 		// check if it is a standard tokens pair
-		if !e.standardTokenHelper([2]common.Address{common.HexToAddress(poolInfo.CostTokenAddress), common.HexToAddress(poolInfo.GetTokenAddress)}) {
+		if !e.standardTokenHelper([2]common.Address{common.HexToAddress(poolInfo.Token0Address), common.HexToAddress(poolInfo.Token1Address)}) {
 			slog.Debug("Skip pool", "pool name", poolInfo.PoolName)
 			poolInfo.Skip = true
 		}
@@ -250,92 +259,108 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 	}
 
 	// Calculate price with decimals
-	costAmount, getAmount, err := TransferTokenAmount(trade.AmountIn, trade.AmountOut, poolInfo.CostTokenDecimals, poolInfo.GetTokenDecimals)
+	amount0, amount1, err := TransferTokenAmount(trade.Amount0, trade.Amount1, poolInfo.Token0Decimals, poolInfo.Token1Decimals)
 	if err != nil {
 		return err
 	}
 
-	if costAmount == 0 || getAmount == 0 {
-		return fmt.Errorf("invalid trade amount in %s out %s", trade.AmountIn, trade.AmountOut)
+	if amount0 == 0 || amount1 == 0 {
+		return fmt.Errorf("invalid trade amount  %s - %s", trade.Amount0, trade.Amount1)
 	}
 
-	var tokenPrice float64
+	var tokenPrice, tokenAmount, usd float64
 	var tokenAddress string
 	var wrapper bool
 
 	for _, s := range e.stableCoins {
-		if s.Cmp(common.HexToAddress(poolInfo.CostTokenAddress)) == 0 {
-			token := e.poolInfo.FindToken(e.chainId, common.HexToAddress(poolInfo.GetTokenAddress))
-			if token == nil {
-				e.poolInfo.AddToken(&storage.TokenInfo{
-					ChainId:        e.chainId,
-					TokenAddress:   poolInfo.GetTokenAddress,
-					DailyVolumeUSD: costAmount,
-				})
-			} else if token.OnlyCache {
-				token.DailyVolumeUSD += costAmount
-				if token.DailyVolumeUSD > minVolumeUSD {
-					token.TokenName, token.TokenSymbol, token.Decimals = fetchTokenInfo(e.ethClient, common.HexToAddress(token.TokenAddress))
-
-					e.poolInfo.StoreToken(token)
-					token.OnlyCache = false
-
-					tokenAddress = token.TokenAddress
-					tokenPrice = costAmount / getAmount
-
-					if e.nativeCoinWrapper.Cmp(common.HexToAddress(token.TokenAddress)) == 0 {
-						e.realtimeNativeTokenPrice = tokenPrice
-					}
-
-					goto end
-				}
+		if s.Cmp(common.HexToAddress(poolInfo.Token0Address)) == 0 {
+			usd = amount0
+			tokenAmount = amount1
+			tokenPrice = handleStableCoin(e.poolInfo, e.chainId, poolInfo.Token1Symbol, poolInfo.Token1Address, amount0, amount1, poolInfo.Token1Decimals)
+			if tokenPrice < 0 {
+				return nil
 			}
-		} else if s.Cmp(common.HexToAddress(poolInfo.GetTokenAddress)) == 0 {
-			token := e.poolInfo.FindToken(e.chainId, common.HexToAddress(poolInfo.CostTokenAddress))
-			if token == nil {
-				e.poolInfo.AddToken(&storage.TokenInfo{
-					TokenAddress:   poolInfo.CostTokenAddress,
-					DailyVolumeUSD: getAmount,
-				})
-			} else if token.OnlyCache {
-				token.DailyVolumeUSD += getAmount
-				if token.DailyVolumeUSD > minVolumeUSD {
-
-					token.TokenName, token.TokenSymbol, token.Decimals = fetchTokenInfo(e.ethClient, common.HexToAddress(token.TokenAddress))
-
-					e.poolInfo.StoreToken(token)
-					token.OnlyCache = false
-
-					tokenAddress = token.TokenAddress
-					tokenPrice = getAmount / costAmount
-
-					if e.nativeCoinWrapper.Cmp(common.HexToAddress(token.TokenAddress)) == 0 {
-						e.realtimeNativeTokenPrice = tokenPrice
-					}
-
-					goto end
-				}
+			tokenAddress = poolInfo.Token1Address
+			goto end
+		} else if s.Cmp(common.HexToAddress(poolInfo.Token1Address)) == 0 {
+			usd = amount1
+			tokenAmount = amount0
+			tokenPrice = handleStableCoin(e.poolInfo, e.chainId, poolInfo.Token0Symbol, poolInfo.Token0Address, amount1, amount0, poolInfo.Token0Decimals)
+			if tokenPrice < 0 {
+				return nil
 			}
+			tokenAddress = poolInfo.Token0Address
+			goto end
 		}
 	}
 
+	// not found stable coin in trade pair, then it should be native wrapper token trade pair
+	// skip if native wrapper token price is not clear
 	if e.realtimeNativeTokenPrice == 0 {
+		slog.Warn("Skip for non native token", "token cost", poolInfo.Token0Symbol+poolInfo.Token0Address, "token get", poolInfo.Token1Symbol+poolInfo.Token1Address)
 		return nil
 	}
 
-	if common.HexToAddress(poolInfo.CostTokenAddress).Cmp(e.nativeCoinWrapper) == 0 {
-		tokenAddress = poolInfo.GetTokenAddress
-		tokenPrice = costAmount / getAmount * e.realtimeNativeTokenPrice
+	//todo skip small volume tokens
+	if common.HexToAddress(poolInfo.Token0Address).Cmp(e.nativeCoinWrapper) == 0 {
+		tokenAddress = poolInfo.Token1Address
+		tokenPrice = amount0 / amount1 * e.realtimeNativeTokenPrice
 		wrapper = true
-	} else if common.HexToAddress(poolInfo.GetTokenAddress).Cmp(e.nativeCoinWrapper) == 0 {
-		tokenAddress = poolInfo.CostTokenAddress
-		tokenPrice = getAmount / tokenPrice * e.realtimeNativeTokenPrice
+
+	} else if common.HexToAddress(poolInfo.Token1Address).Cmp(e.nativeCoinWrapper) == 0 {
+		tokenAddress = poolInfo.Token0Address
+		tokenPrice = amount1 / amount0 * e.realtimeNativeTokenPrice
 		wrapper = true
+
+	}
+
+	// ignore trade pair if it is neither with stable coins nor wrapper native coin
+	if !wrapper {
+		return nil
 	}
 
 end:
+	tokenPrice = truncAmount(tokenPrice)
 	slog.Debug("Token price refresh", "address", tokenAddress, "price", tokenPrice)
-	return e.candleChart.AddCandle(tokenAddress, trade.TradeTime, costAmount, getAmount, tokenPrice, wrapper)
+
+	var isNativeToken bool
+
+	// treat native wrapper token as a normal one
+	if common.HexToAddress(tokenAddress).Cmp(e.nativeCoinWrapper) == 0 {
+		e.realtimeNativeTokenPrice = tokenPrice
+		isNativeToken = true
+	}
+
+	return e.candleChart.AddCandle(tokenAddress, trade.TradeTime, usd, tokenAmount, tokenPrice, isNativeToken)
+}
+
+func truncAmount(amount float64) float64 {
+	return math.Max(float64(int64(amount*precision))/precision, 1/precision)
+}
+
+func handleStableCoin(pool *storage.PoolInfo, chainId, coinSymbol, coinAddress string, usdAmount, coinAmount float64, coinDecimals uint8) float64 {
+	token := pool.FindToken(chainId, coinAddress)
+	if token == nil {
+		pool.AddToken(&storage.TokenInfo{
+			ChainId:        chainId,
+			TokenAddress:   coinAddress,
+			DailyVolumeUSD: usdAmount,
+			TokenName:      coinSymbol,
+			TokenSymbol:    coinSymbol,
+			Decimals:       coinDecimals,
+		})
+	} else if token.OnlyCache {
+		token.DailyVolumeUSD += usdAmount
+		if token.DailyVolumeUSD > minVolumeUSD {
+			pool.StoreToken(token)
+			token.OnlyCache = false
+
+			return usdAmount / coinAmount
+		}
+	}
+
+	// volume is too low
+	return -1
 }
 
 func fetchTokenInfo(c *ethclient.Client, tokenAddress common.Address) (name, symbol string, decimals uint8) {
@@ -439,8 +464,8 @@ func (e *EVMChain) Stop() {
 type TradeInfo struct {
 	Protocol    DEXProtocol
 	PoolAddress *common.Address
-	AmountIn    *big.Int
-	AmountOut   *big.Int
+	Amount0     *big.Int
+	Amount1     *big.Int
 	TradeTime   *time.Time
 }
 
@@ -619,15 +644,15 @@ func (u3 *UniSwapV3) GetPoolInfo(client *ethclient.Client, poolAddress *common.A
 	}
 
 	return &storage.PairInfo{
-		Protocol:          storage.UniV3,
-		PoolAddress:       poolAddress.Hex(),
-		PoolName:          fmt.Sprintf("%s-%s", token0Symbol, token1Symbol),
-		CostTokenAddress:  token0Address.Hex(),
-		CostTokenSymbol:   token0Symbol,
-		CostTokenDecimals: int64(token0Decimals),
-		GetTokenAddress:   token1Address.Hex(),
-		GetTokenSymbol:    token1Symbol,
-		GetTokenDecimals:  int64(token1Decimals),
+		Protocol:       storage.UniV3,
+		PoolAddress:    poolAddress.Hex(),
+		PoolName:       fmt.Sprintf("%s-%s", token0Symbol, token1Symbol),
+		Token0Address:  token0Address.Hex(),
+		Token0Symbol:   token0Symbol,
+		Token0Decimals: token0Decimals,
+		Token1Address:  token1Address.Hex(),
+		Token1Symbol:   token1Symbol,
+		Token1Decimals: token1Decimals,
 	}, nil
 }
 
@@ -663,22 +688,7 @@ func (u3 *UniSwapV3) ExtractTradeInfo(log *types.Log) (*TradeInfo, error) {
 		return nil, fmt.Errorf("invalid amount1 type in swap data")
 	}
 
-	var amountCost, amountGet *big.Int
-
-	// Determine which amount is input (negative) and which is output (positive)
-	if amount0.Cmp(big.NewInt(0)) < 0 && amount1.Cmp(big.NewInt(0)) > 0 {
-		// amount0 is negative (input), amount1 is positive (output)
-		amountCost = new(big.Int).Abs(amount0)
-		amountGet = amount1
-	} else if amount1.Cmp(big.NewInt(0)) < 0 && amount0.Cmp(big.NewInt(0)) > 0 {
-		// amount1 is negative (input), amount0 is positive (output)
-		amountCost = new(big.Int).Abs(amount1)
-		amountGet = amount0
-	} else {
-		return nil, fmt.Errorf("invalid swap amounts: amount0=%s, amount1=%s", amount0.String(), amount1.String())
-	}
-
-	if amountCost == nil || amountGet == nil {
+	if amount0 == nil || amount1 == nil {
 		return nil, fmt.Errorf("failed to extract valid swap amounts from log %s", log.TxHash.Hex())
 	}
 
@@ -688,7 +698,7 @@ func (u3 *UniSwapV3) ExtractTradeInfo(log *types.Log) (*TradeInfo, error) {
 		Protocol:    u3,
 		TradeTime:   &t,
 		PoolAddress: &log.Address,
-		AmountIn:    amountCost,
-		AmountOut:   amountGet,
+		Amount0:     amount0.Abs(amount0),
+		Amount1:     amount1.Abs(amount1),
 	}, nil
 }

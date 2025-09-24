@@ -6,6 +6,7 @@ import (
 	"crypto-mine/storage"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"time"
@@ -18,9 +19,15 @@ func init() {
 	_ = os.Setenv("cf_namespace", "ccf6622667da4486a4d5b1b2823116b6")
 	_ = os.Setenv("cf_api_key", "ROHMxlZqCV-cNnQtHUsJUoBRASjVgZigU8vDL3YV")
 	_ = os.Setenv("worker_host", "http://localhost:8787")
+	_ = os.Setenv("debug", "true")
 	_ = os.Setenv("worker_token", "ROHMxlZqCV-cNnQtHUsJUoBRASjVgZigU8vDL3YV")
+	_ = os.Setenv("eth_price", "4180.6704")
 }
 func main() {
+	if os.Getenv("debug") == "true" {
+		slog.SetLogLoggerLevel(slog.LevelDebug)
+	}
+
 	candleStorage := storage.NewCandleChartKVStorage(storage.NewCloudflareKV(os.Getenv("cf_account"), os.Getenv("cf_namespace"), os.Getenv("cf_api_key")))
 	poolStorage := storage.NewPoolInfo(storage.NewCloudflareD1())
 	poolStorage.AsyncLoadPools()
@@ -37,7 +44,7 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to create EVM chain:", err)
 	}
-	ethChain.RegisterProtocol(uniSwapV3).RegisterStableCoin(config.EthWrapper, []common.Address{config.EvmTetherUSDT, config.EvmUSDC})
+	ethChain.RegisterProtocol(uniSwapV3).RegisterStableCoin(config.EthWrapper, os.Getenv("eth_price"), []common.Address{config.EvmTetherUSDT, config.EvmUSDC, config.EvmUSD1, config.EvmUSDe})
 
 	engine := parser.NewEVMEngine().RegisterChain(ethChain)
 

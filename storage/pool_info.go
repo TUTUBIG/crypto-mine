@@ -6,8 +6,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/ethereum/go-ethereum/common"
 )
 
 const (
@@ -15,17 +13,17 @@ const (
 )
 
 type PairInfo struct {
-	ChainId           string `json:"chain_id"`
-	Protocol          string `json:"protocol"`
-	PoolAddress       string `json:"pool_address"`
-	PoolName          string `json:"pool_name"`
-	CostTokenAddress  string `json:"cost_token_address"`
-	CostTokenSymbol   string `json:"cost_token_symbol"`
-	CostTokenDecimals int64  `json:"cost_token_decimals"`
-	GetTokenAddress   string `json:"get_token_address"`
-	GetTokenSymbol    string `json:"get_token_symbol"`
-	GetTokenDecimals  int64  `json:"get_token_decimals"`
-	Skip              bool   `json:"skip"`
+	ChainId        string `json:"chain_id"`
+	Protocol       string `json:"protocol"`
+	PoolAddress    string `json:"pool_address"`
+	PoolName       string `json:"pool_name"`
+	Token0Address  string `json:"token_0_address"`
+	Token0Symbol   string `json:"token_0_symbol"`
+	Token0Decimals uint8  `json:"token_0_decimals"`
+	Token1Address  string `json:"token_1_address"`
+	Token1Symbol   string `json:"token_1_symbol"`
+	Token1Decimals uint8  `json:"token_1_decimals"`
+	Skip           bool   `json:"skip"`
 }
 
 func (pi *PairInfo) ID() string {
@@ -144,13 +142,13 @@ func (pi *PoolInfo) StoreToken(token *TokenInfo) {
 	}
 }
 
-func (pi *PoolInfo) FindToken(chainId string, tokenAddress common.Address) *TokenInfo {
-	t, f := pi.tokens[GenerateTokenId(chainId, tokenAddress.Hex())]
+func (pi *PoolInfo) FindToken(chainId, tokenAddress string) *TokenInfo {
+	t, f := pi.tokens[GenerateTokenId(chainId, tokenAddress)]
 	if !f && !pi.fetchDone {
-		t = pi.LoadSingleToken(tokenAddress.Hex())
+		t = pi.LoadSingleToken(tokenAddress)
 		if t != nil {
 			t.OnlyCache = false
-			pi.tokens[GenerateTokenId(chainId, tokenAddress.Hex())] = t
+			pi.tokens[GenerateTokenId(chainId, tokenAddress)] = t
 		}
 	}
 	return t

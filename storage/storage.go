@@ -208,7 +208,7 @@ type RealtimeTradeData struct {
 	Price        float64
 	Amount       float64
 	AmountUSD    float64
-	Wrapper      bool
+	Native       bool
 }
 
 func (rd *RealtimeTradeData) ToBytes() ([]byte, error) {
@@ -229,13 +229,13 @@ func (rd *RealtimeTradeData) ToBytes() ([]byte, error) {
 	}
 	buf = append(buf, timeBytes...)
 
-	// Serialize AmountIn (float64)
+	// Serialize Amount0 (float64)
 	amountInBits := *(*uint64)(unsafe.Pointer(&rd.AmountUSD))
 	for i := 0; i < 8; i++ {
 		buf = append(buf, byte(amountInBits>>(8*i)))
 	}
 
-	// Serialize AmountOut (float64)
+	// Serialize Amount1 (float64)
 	amountOutBits := *(*uint64)(unsafe.Pointer(&rd.Amount))
 	for i := 0; i < 8; i++ {
 		buf = append(buf, byte(amountOutBits>>(8*i)))
@@ -371,14 +371,14 @@ func (cc *CandleChart) RegisterIntervalCandle(ic *IntervalCandleChart) *CandleCh
 	return cc
 }
 
-func (cc *CandleChart) AddCandle(tokenAddress string, tradeTime *time.Time, amountIn, amountOut, price float64, wrapper bool) error {
+func (cc *CandleChart) AddCandle(tokenAddress string, tradeTime *time.Time, amountUSD, amountToken, price float64, native bool) error {
 	cc.data <- &RealtimeTradeData{
 		tokenAddress: tokenAddress,
 		TradeTime:    tradeTime,
-		AmountUSD:    amountIn,
-		Amount:       amountOut,
+		AmountUSD:    amountUSD,
+		Amount:       amountToken,
 		Price:        price,
-		Wrapper:      wrapper,
+		Native:       native,
 	}
 	return nil
 }
