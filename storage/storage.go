@@ -263,15 +263,6 @@ func NewIntervalCandleChart(interval time.Duration, storage CandleDataStorage) *
 		interval:           interval,
 		lastStartTimestamp: &startTimestampMinute,
 		storage:            storage,
-		currentCandle: &CandleData{
-			OpenPrice:  0,
-			ClosePrice: 0,
-			HighPrice:  0,
-			LowPrice:   0,
-			VolumeUSD:  0,
-			Volume:     0,
-			Timestamp:  time.Now().Unix(),
-		},
 	}
 }
 
@@ -291,7 +282,7 @@ func (cs *CandleChartKVStorage) Store(tokenID string, interval time.Duration, ca
 		return fmt.Errorf("candle data cannot be nil")
 	}
 
-	slog.Debug("store candle", "token id", tokenID, "price", candle.ClosePrice)
+	slog.Debug("store candle", "token id", tokenID, "candle", candle)
 
 	// Compose the key: tokenID-interval-date
 	// Store whole candle, client will fetch this data only when the first time loading chart.
@@ -425,6 +416,7 @@ func (cc *CandleChart) StartAggregateCandleData() {
 				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
 			}
 			// Process each interval candle
+			// todo fix different token price candle
 			for _, candle := range cc.intervalCandles {
 				// Calculate the start time for the current interval
 				if candle.lastStartTimestamp.Add(candle.interval).After(*tradeData.TradeTime) {
