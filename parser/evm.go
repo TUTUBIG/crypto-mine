@@ -311,7 +311,6 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 		tokenAddress = poolInfo.Token0Address
 		tokenPrice = amount1 / amount0 * e.realtimeNativeTokenPrice
 		wrapper = true
-
 	}
 
 	// ignore trade pair if it is neither with stable coins nor wrapper native coin
@@ -323,15 +322,12 @@ end:
 	tokenPrice = truncAmount(tokenPrice)
 	slog.Debug("Token price refresh", "address", tokenAddress, "price", tokenPrice)
 
-	var isNativeToken bool
-
 	// treat native wrapper token as a normal one
 	if common.HexToAddress(tokenAddress).Cmp(e.nativeCoinWrapper) == 0 {
 		e.realtimeNativeTokenPrice = tokenPrice
-		isNativeToken = true
 	}
 
-	return e.candleChart.AddCandle(tokenAddress, trade.TradeTime, usd, tokenAmount, tokenPrice, isNativeToken)
+	return e.candleChart.AddCandle(e.chainId, tokenAddress, trade.TradeTime, usd, tokenAmount, tokenPrice)
 }
 
 func truncAmount(amount float64) float64 {

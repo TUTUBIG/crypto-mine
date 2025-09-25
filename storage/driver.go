@@ -451,14 +451,14 @@ func NewCloudflareDurable() *CloudflareDurable {
 	}
 }
 
-func (c *CloudflareDurable) Publish(tokenAddress string, data []byte) (bool, error) {
+func (c *CloudflareDurable) Publish(tokenID string, data []byte) (bool, error) {
 	req, err := http.NewRequest("POST", c.baseURL+"/publish", bytes.NewBuffer(data))
 	if err != nil {
 		return false, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/binary")
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Customized-Token-Address", tokenAddress)
+	req.Header.Set("Customized-Token-ID", tokenID)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

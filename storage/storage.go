@@ -203,6 +203,7 @@ func (cdl *CandleDataList) FromBytes(data []byte) error {
 }
 
 type RealtimeTradeData struct {
+	chainId      string
 	tokenAddress string
 	TradeTime    *time.Time
 	Price        float64
@@ -371,14 +372,14 @@ func (cc *CandleChart) RegisterIntervalCandle(ic *IntervalCandleChart) *CandleCh
 	return cc
 }
 
-func (cc *CandleChart) AddCandle(tokenAddress string, tradeTime *time.Time, amountUSD, amountToken, price float64, native bool) error {
+func (cc *CandleChart) AddCandle(chainId, tokenAddress string, tradeTime *time.Time, amountUSD, amountToken, price float64) error {
 	cc.data <- &RealtimeTradeData{
+		chainId:      chainId,
 		tokenAddress: tokenAddress,
 		TradeTime:    tradeTime,
 		AmountUSD:    amountUSD,
 		Amount:       amountToken,
 		Price:        price,
-		Native:       native,
 	}
 	return nil
 }
@@ -396,7 +397,7 @@ func (cc *CandleChart) StartAggregateCandleData() {
 			if err != nil {
 				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
 			}
-			if _, err := cc.publisher.Publish(tradeData.tokenAddress, data); err != nil {
+			if _, err := cc.publisher.Publish(GenerateTokenId(tradeData.chainId, tradeData.tokenAddress), data); err != nil {
 				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
 			}
 			// Process each interval candle
