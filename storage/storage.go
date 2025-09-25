@@ -350,10 +350,24 @@ func (cs *CandleChartKVStorage) GetCandlesByTimeRange(tokenID string, interval t
 	return cs.GetCandles(tokenID, interval, startTime.Unix(), endTime.Unix(), 0)
 }
 
-func (cs *CandleChartKVStorage) GetRecentCandles(tokenID string, interval time.Duration, count int) ([]*CandleData, error) {
-	now := time.Now().Unix()
-	past := now - int64(interval.Seconds()*float64(count*2))
-	return cs.GetCandles(tokenID, interval, past, now, count)
+func (cs *CandleChartKVStorage) GetRecentCandles(tokenID string, interval time.Duration) (CandleDataList, error) {
+	key := fmt.Sprintf("%s-%d-%s", tokenID, int(interval.Seconds()), time.Now().UTC().Format(time.DateOnly))
+
+	data, err := cs.engine.Load(key)
+	if err != nil {
+		if !errors.Is(err, NotfoundError) {
+			return nil, err
+		}
+	}
+	candles := make(CandleDataList, 0)
+	if err := candles.FromBytes(data); err != nil {
+		return nil, err
+	}
+
+	fmt.Printf("%+v %s", candles, key)
+
+	return candles, nil
+
 }
 
 func NewCandleChartKVStorage(engine KVDriver) *CandleChartKVStorage {
