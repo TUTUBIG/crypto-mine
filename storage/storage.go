@@ -17,12 +17,12 @@ type CandleData struct {
 	ClosePrice float64
 	HighPrice  float64
 	LowPrice   float64
-	VolumeIn   float64
-	VolumeOut  float64
+	Volume     float64
+	VolumeUSD  float64
 	Timestamp  int64 // second
 }
 
-func (cd *CandleData) refresh(amountIn, amountOut, price float64) bool {
+func (cd *CandleData) refresh(amount, amountUSD, price float64) bool {
 
 	cd.ClosePrice = price
 	if price > cd.HighPrice {
@@ -32,8 +32,8 @@ func (cd *CandleData) refresh(amountIn, amountOut, price float64) bool {
 		cd.LowPrice = price
 	}
 
-	cd.VolumeIn += amountIn
-	cd.VolumeOut += amountOut
+	cd.VolumeUSD += amountUSD
+	cd.Volume += amount
 	return true
 }
 
@@ -113,15 +113,15 @@ func (cdl *CandleDataList) ToBytes() []byte {
 		}
 		offset += 8
 
-		// VolumeIn (float64)
-		volInBits := *(*uint64)(unsafe.Pointer(&candle.VolumeIn))
+		// VolumeUSD (float64)
+		volInBits := *(*uint64)(unsafe.Pointer(&candle.VolumeUSD))
 		for i := 0; i < 8; i++ {
 			data[offset+i] = byte(volInBits >> (i * 8))
 		}
 		offset += 8
 
-		// VolumeOut (float64)
-		volOutBits := *(*uint64)(unsafe.Pointer(&candle.VolumeOut))
+		// Volume (float64)
+		volOutBits := *(*uint64)(unsafe.Pointer(&candle.Volume))
 		for i := 0; i < 8; i++ {
 			data[offset+i] = byte(volOutBits >> (i * 8))
 		}
@@ -188,13 +188,13 @@ func (cdl *CandleDataList) FromBytes(data []byte) error {
 		// Read VolumeIn (float64)
 		volInBits := uint64(data[offset]) | uint64(data[offset+1])<<8 | uint64(data[offset+2])<<16 | uint64(data[offset+3])<<24 |
 			uint64(data[offset+4])<<32 | uint64(data[offset+5])<<40 | uint64(data[offset+6])<<48 | uint64(data[offset+7])<<56
-		candle.VolumeIn = *(*float64)(unsafe.Pointer(&volInBits))
+		candle.VolumeUSD = *(*float64)(unsafe.Pointer(&volInBits))
 		offset += 8
 
 		// Read VolumeOut (float64)
 		volOutBits := uint64(data[offset]) | uint64(data[offset+1])<<8 | uint64(data[offset+2])<<16 | uint64(data[offset+3])<<24 |
 			uint64(data[offset+4])<<32 | uint64(data[offset+5])<<40 | uint64(data[offset+6])<<48 | uint64(data[offset+7])<<56
-		candle.VolumeOut = *(*float64)(unsafe.Pointer(&volOutBits))
+		candle.Volume = *(*float64)(unsafe.Pointer(&volOutBits))
 		offset += 8
 	}
 
@@ -268,17 +268,17 @@ func NewIntervalCandleChart(interval time.Duration, storage CandleDataStorage) *
 			ClosePrice: 0,
 			HighPrice:  0,
 			LowPrice:   0,
-			VolumeIn:   0,
-			VolumeOut:  0,
+			VolumeUSD:  0,
+			Volume:     0,
 			Timestamp:  time.Now().Unix(),
 		},
 	}
 }
 
 type CandleDataStorage interface {
-	Store(pairID string, interval time.Duration, candle *CandleData) error
-	GetCandles(pairID string, interval time.Duration, startTime, endTime int64, limit int) ([]*CandleData, error)
-	GetLatestCandle(pairID string, interval time.Duration) (*CandleData, error)
+	Store(tokenID string, interval time.Duration, candle *CandleData) error
+	GetCandles(tokenID string, interval time.Duration, startTime, endTime int64, limit int) ([]*CandleData, error)
+	GetLatestCandle(tokenID string, interval time.Duration) (*CandleData, error)
 }
 
 type CandleChartKVStorage struct {
@@ -286,14 +286,16 @@ type CandleChartKVStorage struct {
 	engine KVDriver
 }
 
-func (cs *CandleChartKVStorage) Store(pairID string, interval time.Duration, candle *CandleData) error {
+func (cs *CandleChartKVStorage) Store(tokenID string, interval time.Duration, candle *CandleData) error {
 	if candle == nil {
 		return fmt.Errorf("candle data cannot be nil")
 	}
 
-	// Compose the key: pairID-interval-date
+	slog.Debug("store candle", "token id", tokenID, "price", candle.ClosePrice)
+
+	// Compose the key: tokenID-interval-date
 	// Store whole candle, client will fetch this data only when the first time loading chart.
-	key := fmt.Sprintf("%s-%d-%s", pairID, int(interval.Seconds()), time.Unix(candle.Timestamp, 0).UTC().Format(time.DateOnly))
+	key := fmt.Sprintf("%s-%d-%s", tokenID, int(interval.Seconds()), time.Unix(candle.Timestamp, 0).UTC().Format(time.DateOnly))
 
 	if len(cs.cache) == 0 {
 		data, err := cs.engine.Load(key)
@@ -318,8 +320,8 @@ func (cs *CandleChartKVStorage) Store(pairID string, interval time.Duration, can
 		return err
 	}
 
-	// Store the latest candle, this is designed from pooling the latest candle from client side.
-	currentKey := fmt.Sprintf("%s-%d-current", pairID, int(interval.Seconds()))
+	// Store the latest candle, this is designed from polling the latest candle from client side.
+	currentKey := fmt.Sprintf("%s-%d-current", tokenID, int(interval.Seconds()))
 	if err := cs.engine.Store(currentKey, candle.ToBytes()); err != nil {
 		return err
 	}
@@ -327,23 +329,31 @@ func (cs *CandleChartKVStorage) Store(pairID string, interval time.Duration, can
 	return nil
 }
 
-func (cs *CandleChartKVStorage) GetCandles(pairID string, interval time.Duration, startTime, endTime int64, limit int) ([]*CandleData, error) {
+func (cs *CandleChartKVStorage) GetCandles(tokenID string, interval time.Duration, startTime, endTime int64, limit int) ([]*CandleData, error) {
 	return nil, nil
 }
 
-func (cs *CandleChartKVStorage) GetLatestCandle(pairID string, interval time.Duration) (*CandleData, error) {
-
-	return nil, nil
+func (cs *CandleChartKVStorage) GetLatestCandle(tokenID string, interval time.Duration) (*CandleData, error) {
+	currentKey := fmt.Sprintf("%s-%d-current", tokenID, int(interval.Seconds()))
+	data, err := cs.engine.Load(currentKey)
+	if err != nil {
+		return nil, err
+	}
+	cd := new(CandleData)
+	if err := cd.FromBytes(data); err != nil {
+		return nil, err
+	}
+	return cd, nil
 }
 
-func (cs *CandleChartKVStorage) GetCandlesByTimeRange(pairID string, interval time.Duration, startTime, endTime time.Time) ([]*CandleData, error) {
-	return cs.GetCandles(pairID, interval, startTime.Unix(), endTime.Unix(), 0)
+func (cs *CandleChartKVStorage) GetCandlesByTimeRange(tokenID string, interval time.Duration, startTime, endTime time.Time) ([]*CandleData, error) {
+	return cs.GetCandles(tokenID, interval, startTime.Unix(), endTime.Unix(), 0)
 }
 
-func (cs *CandleChartKVStorage) GetRecentCandles(pairID string, interval time.Duration, count int) ([]*CandleData, error) {
+func (cs *CandleChartKVStorage) GetRecentCandles(tokenID string, interval time.Duration, count int) ([]*CandleData, error) {
 	now := time.Now().Unix()
 	past := now - int64(interval.Seconds()*float64(count*2))
-	return cs.GetCandles(pairID, interval, past, now, count)
+	return cs.GetCandles(tokenID, interval, past, now, count)
 }
 
 func NewCandleChartKVStorage(engine KVDriver) *CandleChartKVStorage {
@@ -410,8 +420,8 @@ func (cc *CandleChart) StartAggregateCandleData() {
 							ClosePrice: tradeData.Price,
 							HighPrice:  tradeData.Price,
 							LowPrice:   tradeData.Price,
-							VolumeIn:   tradeData.AmountUSD,
-							VolumeOut:  tradeData.Amount,
+							VolumeUSD:  tradeData.AmountUSD,
+							Volume:     tradeData.Amount,
 							Timestamp:  tradeData.TradeTime.Unix(),
 						}
 					} else {
@@ -421,7 +431,7 @@ func (cc *CandleChart) StartAggregateCandleData() {
 					break
 				} else {
 					candle.lastStartTimestamp = tradeData.TradeTime
-					if err := candle.storage.Store(tradeData.tokenAddress, candle.interval, candle.currentCandle); err != nil {
+					if err := candle.storage.Store(GenerateTokenId(tradeData.chainId, tradeData.tokenAddress), candle.interval, candle.currentCandle); err != nil {
 						slog.Error("store candle error", "error", err.Error(), "candle", candle.currentCandle)
 						break
 					}
@@ -430,8 +440,8 @@ func (cc *CandleChart) StartAggregateCandleData() {
 						ClosePrice: tradeData.Price,
 						HighPrice:  tradeData.Price,
 						LowPrice:   tradeData.Price,
-						VolumeIn:   tradeData.AmountUSD,
-						VolumeOut:  tradeData.Amount,
+						VolumeUSD:  tradeData.AmountUSD,
+						Volume:     tradeData.Amount,
 						Timestamp:  tradeData.TradeTime.Unix(),
 					}
 					candle.currentCandle = &newCandleData

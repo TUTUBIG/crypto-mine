@@ -50,7 +50,7 @@ func (ti *TokenInfo) ID() string {
 }
 
 func GenerateTokenId(chainId, tokenAddress string) string {
-	return fmt.Sprintf("%s-%s", chainId, strings.TrimPrefix("0x", strings.ToLower(tokenAddress)))
+	return fmt.Sprintf("%s-%s", chainId, strings.TrimPrefix(strings.ToLower(tokenAddress), "0x"))
 }
 
 type PoolInfo struct {

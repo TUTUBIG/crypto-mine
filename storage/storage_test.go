@@ -97,18 +97,42 @@ func TestCloudflareDurable_Publish(t *testing.T) {
 	d := NewCloudflareDurable()
 	n := time.Now()
 	data := &RealtimeTradeData{
-		poolID:    "12345",
-		AmountIn:  1000,
-		AmountOut: 500,
-		TradeTime: &n,
+		chainId:      "1",
+		tokenAddress: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+		TradeTime:    &n,
+		Price:        116000,
+		Amount:       0.001,
+		AmountUSD:    116,
+		Native:       false,
 	}
 	dq, e := data.ToBytes()
 	if e != nil {
 		t.Fatal(e)
 	}
-	ok, err := d.Publish(data.poolID, dq)
+	ok, err := d.Publish(GenerateTokenId(data.chainId, data.tokenAddress), dq)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Log(ok)
+}
+
+func TestCandleChartKVStorage_Store(t *testing.T) {
+	candleStorage := NewCandleChartKVStorage(NewCloudflareKV("8dac6dbd68790fa6deec035c5b9551b9", "ccf6622667da4486a4d5b1b2823116b6", "ROHMxlZqCV-cNnQtHUsJUoBRASjVgZigU8vDL3YV"))
+	if err := candleStorage.Store(GenerateTokenId("1", "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"), time.Minute, &CandleData{
+		OpenPrice:  116700,
+		ClosePrice: 117700,
+		HighPrice:  119700,
+		LowPrice:   109700,
+		Volume:     11,
+		VolumeUSD:  139700,
+		Timestamp:  time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	candle, err := candleStorage.GetLatestCandle(GenerateTokenId("1", "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%+v", candle)
 }
