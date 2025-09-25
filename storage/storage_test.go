@@ -118,7 +118,7 @@ func TestCloudflareDurable_Publish(t *testing.T) {
 
 func TestCandleChartKVStorage_Store(t *testing.T) {
 	candleStorage := NewCandleChartKVStorage(NewCloudflareKV("8dac6dbd68790fa6deec035c5b9551b9", "ccf6622667da4486a4d5b1b2823116b6", "ROHMxlZqCV-cNnQtHUsJUoBRASjVgZigU8vDL3YV"))
-	if err := candleStorage.Store(GenerateTokenId("1", "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"), time.Minute, &CandleData{
+	if err := candleStorage.Store(GenerateTokenId("1", "0x2260fac5e5542a773aa44fbcfedf7c193bc2c591"), time.Minute, &CandleData{
 		OpenPrice:  116700,
 		ClosePrice: 117700,
 		HighPrice:  119700,
@@ -130,7 +130,8 @@ func TestCandleChartKVStorage_Store(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	candle, err := candleStorage.GetLatestCandle(GenerateTokenId("1", "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"), time.Minute)
+	time.Sleep(time.Second * 2)
+	candle, err := candleStorage.GetLatestCandle(GenerateTokenId("1", "0x2260fac5e5542a773aa44fbcfedf7c193bc2c591"), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

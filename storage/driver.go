@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -48,35 +50,7 @@ func (c *CloudflareKV) Store(key string, value []byte) error {
 	url := fmt.Sprintf("%s/accounts/%s/storage/kv/namespaces/%s/values/%s",
 		c.BaseURL, c.AccountID, c.NamespaceID, key)
 
-	// Create PUT request with the value as body
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(value))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set required headers
-	req.Header.Set("Authorization", "Bearer "+c.APIToken)
-	req.Header.Set("Content-Type", "text/plain")
-
-	// Execute the request
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			slog.Error("failed to close response body", "error", err, "url", url)
-		}
-	}(resp.Body)
-
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("cloudflare KV store failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	return nil
+	return putKVHelper(c.httpClient, c.APIToken, url, value)
 }
 
 func (c *CloudflareKV) Load(key string) ([]byte, error) {
@@ -117,7 +91,14 @@ func (c *CloudflareKV) Load(key string) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read response body: %w", err)
 		}
-		return body, nil
+
+		data := make([]byte, 128)
+		n, err := base64.StdEncoding.Decode(data, body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode response body: %w", err)
+		}
+
+		return data[:n], nil
 
 	case http.StatusNotFound:
 		// Key not found
@@ -140,18 +121,22 @@ func (c *CloudflareKV) StoreWithTTL(key string, value []byte, ttlSeconds int) er
 	url := fmt.Sprintf("%s/accounts/%s/storage/kv/namespaces/%s/values/%s?expiration_ttl=%d",
 		c.BaseURL, c.AccountID, c.NamespaceID, key, ttlSeconds)
 
+	return putKVHelper(c.httpClient, c.APIToken, url, value)
+}
+
+func putKVHelper(httpClient *http.Client, apiKey, url string, value []byte) error {
 	// Create PUT request with the value as body
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(value))
+	req, err := http.NewRequest("PUT", url, strings.NewReader(base64.StdEncoding.EncodeToString(value)))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Set required headers
-	req.Header.Set("Authorization", "Bearer "+c.APIToken)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "text/plain")
 
 	// Execute the request
-	resp, err := c.httpClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to execute request: %w", err)
 	}
