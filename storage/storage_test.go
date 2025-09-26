@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+var n = time.Now()
+
 func TestCandleDataList_Base64Encode(t *testing.T) {
 	cl := make(CandleDataList, 0)
 	cl = append(cl, CandleData{
@@ -19,7 +21,7 @@ func TestCandleDataList_Base64Encode(t *testing.T) {
 		ClosePrice: 2,
 		HighPrice:  10,
 		LowPrice:   0,
-		Timestamp:  0,
+		Timestamp:  &n,
 	})
 	data := cl.ToBytes()
 	t.Log(base64.StdEncoding.EncodeToString(data))
@@ -37,7 +39,7 @@ func TestCandleDataList_Base64Decode(t *testing.T) {
 		ClosePrice: 2,
 		HighPrice:  10,
 		LowPrice:   0,
-		Timestamp:  0,
+		Timestamp:  &n,
 	})
 	data := cl.ToBytes()
 	cl = make(CandleDataList, 0)
@@ -53,7 +55,7 @@ func TestCandleData_Base64Encode(t *testing.T) {
 		ClosePrice: 0.2,
 		HighPrice:  1,
 		LowPrice:   0,
-		Timestamp:  0,
+		Timestamp:  &n,
 	}
 
 	t.Log(base64.StdEncoding.EncodeToString(candle.ToBytes()))
@@ -65,7 +67,7 @@ func TestCandleData_ToBytes(t *testing.T) {
 		ClosePrice: 0.2,
 		HighPrice:  1,
 		LowPrice:   0,
-		Timestamp:  0,
+		Timestamp:  &n,
 	}
 	if err := candle.FromBytes(candle.ToBytes()); err != nil {
 		t.Fatal(err)
@@ -125,7 +127,7 @@ func TestCandleChartKVStorage_Store(t *testing.T) {
 		LowPrice:   106700,
 		Volume:     11,
 		VolumeUSD:  139700,
-		Timestamp:  time.Now().Unix(),
+		Timestamp:  &n,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +141,7 @@ func TestCandleChartKVStorage_Load(t *testing.T) {
 	}
 	t.Logf("%+v", candle)
 
-	candles, err := candleStorage.GetRecentCandles(GenerateTokenId("1", "0x2260fac5e5542a773aa44fbcfedf7c193bc2c594"), time.Minute)
+	candles, err := candleStorage.GetRecentCandles(GenerateTokenId("1", "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,7 +16,7 @@ import (
 
 func init() {
 	_ = os.Setenv("cf_account", "8dac6dbd68790fa6deec035c5b9551b9")
-	_ = os.Setenv("cf_namespace", "ccf6622667da4486a4d5b1b2823116b6")
+	_ = os.Setenv("cf_namespace", "d425adfc89ad4e9080629fb317a60f1b")
 	_ = os.Setenv("cf_api_key", "ROHMxlZqCV-cNnQtHUsJUoBRASjVgZigU8vDL3YV")
 	_ = os.Setenv("worker_host", "https://crypto-pump.bigtutu.workers.dev")
 	_ = os.Setenv("debug", "true")

@@ -324,7 +324,6 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 
 end:
 	tokenPrice = truncAmount(tokenPrice)
-	slog.Debug("Token price refresh", "address", tokenAddress, "price", tokenPrice, "amount", usd)
 
 	// treat native wrapper token as a normal one
 	if common.HexToAddress(tokenAddress).Cmp(e.nativeCoinWrapper) == 0 {
