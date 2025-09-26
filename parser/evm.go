@@ -305,11 +305,15 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 	if common.HexToAddress(poolInfo.Token0Address).Cmp(e.nativeCoinWrapper) == 0 {
 		tokenAddress = poolInfo.Token1Address
 		tokenPrice = amount0 / amount1 * e.realtimeNativeTokenPrice
+		usd = amount0 * e.realtimeNativeTokenPrice
+		tokenAmount = amount1
 		wrapper = true
 
 	} else if common.HexToAddress(poolInfo.Token1Address).Cmp(e.nativeCoinWrapper) == 0 {
 		tokenAddress = poolInfo.Token0Address
 		tokenPrice = amount1 / amount0 * e.realtimeNativeTokenPrice
+		usd = amount1 * e.realtimeNativeTokenPrice
+		tokenAmount = amount0
 		wrapper = true
 	}
 
@@ -320,7 +324,7 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 
 end:
 	tokenPrice = truncAmount(tokenPrice)
-	slog.Debug("Token price refresh", "address", tokenAddress, "price", tokenPrice)
+	slog.Debug("Token price refresh", "address", tokenAddress, "price", tokenPrice, "amount", usd)
 
 	// treat native wrapper token as a normal one
 	if common.HexToAddress(tokenAddress).Cmp(e.nativeCoinWrapper) == 0 {
