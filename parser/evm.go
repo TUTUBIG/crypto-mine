@@ -465,7 +465,7 @@ type TradeInfo struct {
 	PoolAddress *common.Address
 	Amount0     *big.Int
 	Amount1     *big.Int
-	TradeTime   *time.Time
+	TradeTime   time.Time
 }
 
 type DEXProtocol interface {
@@ -695,7 +695,7 @@ func (u3 *UniSwapV3) ExtractTradeInfo(log *types.Log) (*TradeInfo, error) {
 	t := time.Now()
 	return &TradeInfo{
 		Protocol:    u3,
-		TradeTime:   &t,
+		TradeTime:   t,
 		PoolAddress: &log.Address,
 		Amount0:     amount0.Abs(amount0),
 		Amount1:     amount1.Abs(amount1),

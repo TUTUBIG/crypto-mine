@@ -19,7 +19,7 @@ type CandleData struct {
 	LowPrice   float64
 	Volume     float64
 	VolumeUSD  float64
-	Timestamp  *time.Time
+	Timestamp  time.Time
 }
 
 func (cd *CandleData) refresh(amount, amountUSD, price float64) bool {
@@ -161,7 +161,7 @@ func (cdl *CandleDataList) FromBytes(data []byte) error {
 			int64(data[offset+4])<<32 | int64(data[offset+5])<<40 | int64(data[offset+6])<<48 | int64(data[offset+7])<<56
 		offset += 8
 
-		*(candle.Timestamp) = time.Unix(timestamp, 0)
+		candle.Timestamp = time.Unix(timestamp, 0)
 
 		// Read OpenPrice (float64)
 		openBits := uint64(data[offset]) | uint64(data[offset+1])<<8 | uint64(data[offset+2])<<16 | uint64(data[offset+3])<<24 |
@@ -207,7 +207,7 @@ func (cdl *CandleDataList) FromBytes(data []byte) error {
 type RealtimeTradeData struct {
 	chainId      string
 	tokenAddress string
-	TradeTime    *time.Time
+	TradeTime    time.Time
 	Price        float64
 	Amount       float64
 	AmountUSD    float64
@@ -222,10 +222,8 @@ func (rd *RealtimeTradeData) ToBytes() ([]byte, error) {
 	buf := make([]byte, 0, 8+8+8) // time (int64) + float64 + float64
 
 	// Serialize TradeTime as UnixNano (int64), or 0 if nil
-	var ts int64
-	if rd.TradeTime != nil {
-		ts = rd.TradeTime.Unix()
-	}
+	ts := rd.TradeTime.Unix()
+
 	timeBytes := make([]byte, 8)
 	for i := 0; i < 8; i++ {
 		timeBytes[i] = byte(ts >> (8 * i))
@@ -272,7 +270,7 @@ type CandleDataStorage interface {
 }
 
 type CandleChartKVStorage struct {
-	cache  CandleDataList
+	cache  map[string]CandleDataList
 	engine KVDriver
 }
 
@@ -285,7 +283,13 @@ func (cs *CandleChartKVStorage) Store(tokenID string, interval time.Duration, ca
 	// Store whole candle, client will fetch this data only when the first time loading chart.
 	key := fmt.Sprintf("%s-%d-%s", tokenID, int(interval.Seconds()), candle.Timestamp.UTC().Format(time.DateOnly))
 
-	if len(cs.cache) == 0 {
+	cache, ok := cs.cache[key]
+	if !ok {
+		cache = make(CandleDataList, 0)
+		cs.cache[key] = cache
+	}
+
+	if len(cache) == 0 {
 		data, err := cs.engine.Load(key)
 		if err != nil {
 			if !errors.Is(err, NotfoundError) {
@@ -298,13 +302,13 @@ func (cs *CandleChartKVStorage) Store(tokenID string, interval time.Duration, ca
 				return err
 			}
 
-			cs.cache = candles
+			cache = candles
 		}
 	}
 
-	cs.cache = append(cs.cache, *candle)
+	cache = append(cache, *candle)
 
-	if err := cs.engine.Store(key, cs.cache.ToBytes()); err != nil {
+	if err := cs.engine.Store(key, cache.ToBytes()); err != nil {
 		return err
 	}
 
@@ -360,7 +364,7 @@ func (cs *CandleChartKVStorage) GetRecentCandles(tokenID string, interval time.D
 
 func NewCandleChartKVStorage(engine KVDriver) *CandleChartKVStorage {
 	return &CandleChartKVStorage{
-		cache:  make(CandleDataList, 0),
+		cache:  make(map[string]CandleDataList),
 		engine: engine,
 	}
 }
@@ -384,7 +388,7 @@ func (cc *CandleChart) RegisterIntervalCandle(ic *IntervalCandleChart) *CandleCh
 	return cc
 }
 
-func (cc *CandleChart) AddCandle(chainId, tokenAddress string, tradeTime *time.Time, amountUSD, amountToken, price float64) error {
+func (cc *CandleChart) AddCandle(chainId, tokenAddress string, tradeTime time.Time, amountUSD, amountToken, price float64) error {
 	cc.data <- &RealtimeTradeData{
 		chainId:      chainId,
 		tokenAddress: tokenAddress,
@@ -429,7 +433,7 @@ func (cc *CandleChart) StartAggregateCandleData() {
 				}
 
 				// Calculate the start time for the current interval, refresh the current candle if this price is still in the current time frame
-				if currentCandle.Timestamp.Add(candle.interval).After(*tradeData.TradeTime) {
+				if currentCandle.Timestamp.Add(candle.interval).After(tradeData.TradeTime) {
 					slog.Debug("refresh candle", "token", tradeData.tokenAddress, "price", tradeData.Price, "time", tradeData.TradeTime.Format(time.RFC3339))
 					currentCandle.refresh(tradeData.AmountUSD, tradeData.Amount, tradeData.Price)
 					// Skip for larger intervals if it is before the smaller one

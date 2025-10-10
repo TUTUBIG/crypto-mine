@@ -92,8 +92,6 @@ func (c *CloudflareKV) Load(key string) ([]byte, error) {
 			return nil, fmt.Errorf("failed to read response body: %w", err)
 		}
 
-		fmt.Println("response body:", string(body))
-
 		return base64.StdEncoding.DecodeString(string(body))
 
 	case http.StatusNotFound:
