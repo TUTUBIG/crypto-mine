@@ -9,53 +9,124 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
 
-func init() {
-	_ = os.Setenv("cf_account", "8dac6dbd68790fa6deec035c5b9551b9")
-	_ = os.Setenv("cf_namespace", "d425adfc89ad4e9080629fb317a60f1b")
-	_ = os.Setenv("cf_api_key", "ROHMxlZqCV-cNnQtHUsJUoBRASjVgZigU8vDL3YV")
-	_ = os.Setenv("worker_host", "https://crypto-pump.bigtutu.workers.dev")
-	_ = os.Setenv("debug", "true")
-	_ = os.Setenv("worker_token", "ROHMxlZqCV-cNnQtHUsJUoBRASjVgZigU8vDL3YV")
-	_ = os.Setenv("eth_price", "4180.6704")
-}
 func main() {
-	if os.Getenv("debug") == "true" {
+	// Load configuration
+	cfg := config.LoadConfig()
+
+	// Set log level based on debug flag
+	if cfg.Debug {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
+		slog.Info("Debug mode enabled")
+	} else {
+		slog.SetLogLoggerLevel(slog.LevelInfo)
 	}
 
-	candleStorage := storage.NewCandleChartKVStorage(storage.NewCloudflareKV(os.Getenv("cf_account"), os.Getenv("cf_namespace"), os.Getenv("cf_api_key")))
-	poolStorage := storage.NewPoolInfo(storage.NewCloudflareD1())
+	// Validate required configuration
+	if err := validateConfig(cfg); err != nil {
+		log.Fatalf("Configuration error: %v", err)
+	}
+
+	// Initialize storage systems
+	candleStorage := storage.NewCandleChartKVStorage(
+		storage.NewCloudflareKV(cfg.CFAccount, cfg.CFNamespace, cfg.CFAPIKey))
+	cloudflareWorker := storage.NewCloudflareWorker(cfg.WorkerHost, cfg.WorkerToken)
+	cloudflareD1 := storage.NewCloudflareD1(cloudflareWorker)
+	poolStorage := storage.NewPoolInfo(cloudflareD1)
+
+	// Load pools and tokens asynchronously
 	poolStorage.AsyncLoadPools()
 	poolStorage.AsyncLoadTokens()
 
-	minuteChart := storage.NewIntervalCandleChart(time.Minute, candleStorage)
-	candleChart := storage.NewCandleChart().RegisterIntervalCandle(minuteChart)
-
+	// Setup candle chart with configurable interval
+	minuteChart := storage.NewIntervalCandleChart(cfg.CandleInterval, candleStorage)
+	candleChart := storage.NewCandleChart(cloudflareWorker).RegisterIntervalCandle(minuteChart)
 	candleChart.StartAggregateCandleData()
 
+	// Initialize DEX protocols
 	uniSwapV3 := parser.NewUniSwapV3()
 
-	ethChain, err := parser.NewEVMChain(poolStorage, candleChart, "https://capable-tiniest-knowledge.quiknode.pro/326754df17ae865cf46d044db09213ce7e2ec23b", "wss://capable-tiniest-knowledge.quiknode.pro/326754df17ae865cf46d044db09213ce7e2ec23b")
+	// Create EVM chain monitor
+	ethChain, err := parser.NewEVMChain(poolStorage, candleChart, cfg.RPCEndpoint, cfg.WSEndpoint)
 	if err != nil {
-		log.Fatal("Failed to create EVM chain:", err)
+		log.Fatalf("Failed to create EVM chain: %v", err)
 	}
-	ethChain.RegisterProtocol(uniSwapV3).RegisterStableCoin(config.EthWrapper, os.Getenv("eth_price"), []common.Address{config.EvmTetherUSDT, config.EvmUSDC, config.EvmUSD1, config.EvmUSDe})
 
+	// Start buffer monitoring goroutine
+	go monitorBuffers(ethChain)
+
+	// Configure stablecoins and native wrapper
+	ethPriceStr := strconv.FormatFloat(cfg.EthPrice, 'f', -1, 64)
+	ethChain.RegisterProtocol(uniSwapV3).RegisterStableCoin(
+		config.EthWrapper,
+		ethPriceStr,
+		[]common.Address{
+			config.EvmTetherUSDT,
+			config.EvmUSDC,
+			config.EvmUSD1,
+			config.EvmUSDe,
+		},
+	)
+
+	// Create and start engine
 	engine := parser.NewEVMEngine().RegisterChain(ethChain)
-
 	if err := engine.Start(); err != nil {
-		log.Fatal("Failed to start engine:", err)
+		log.Fatalf("Failed to start engine: %v", err)
 	}
 
-	// Monitor Ctrl-C (interrupt) signal and stop the engine gracefully
+	slog.Info("Crypto mining engine started successfully",
+		"chain_id", ethChain.ChainID(),
+		"min_volume_usd", cfg.MinVolumeUSD,
+		"candle_interval", cfg.CandleInterval)
+
+	// Graceful shutdown handling
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
 	<-sigChan
-	fmt.Println("Received interrupt signal, stopping engine...")
+	slog.Info("Received shutdown signal, stopping engine...")
+
+	// Stop the engine gracefully
 	engine.Stop()
+
+	slog.Info("Engine stopped successfully")
+}
+
+// validateConfig checks if all required configuration values are set
+func validateConfig(cfg *config.Config) error {
+	if cfg.CFAccount == "" {
+		return fmt.Errorf("cf_account is required")
+	}
+	if cfg.CFNamespace == "" {
+		return fmt.Errorf("cf_namespace is required")
+	}
+	if cfg.CFAPIKey == "" {
+		return fmt.Errorf("cf_api_key is required")
+	}
+	if cfg.WorkerHost == "" {
+		return fmt.Errorf("worker_host is required")
+	}
+	if cfg.RPCEndpoint == "" {
+		return fmt.Errorf("rpc_endpoint is required")
+	}
+	if cfg.WSEndpoint == "" {
+		return fmt.Errorf("ws_endpoint is required")
+	}
+	return nil
+}
+
+// monitorBuffers periodically logs buffer status
+func monitorBuffers(chain *parser.EVMChain) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		chain.PrintBuffer()
+	}
 }

@@ -9,7 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -202,19 +202,29 @@ func (c *CloudflareKV) Exists(key string) (bool, error) {
 	return true, nil
 }
 
-type CloudflareD1 struct {
+type CloudflareWorker struct {
 	baseURL    string
 	token      string
 	httpClient *http.Client
 }
 
-func NewCloudflareD1() *CloudflareD1 {
-	return &CloudflareD1{
-		baseURL: os.Getenv("worker_host"),
-		token:   os.Getenv("worker_token"),
+func NewCloudflareWorker(baseURL string, token string) *CloudflareWorker {
+	return &CloudflareWorker{
+		baseURL: baseURL,
+		token:   token,
 		httpClient: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout: time.Second * 10,
 		},
+	}
+}
+
+type CloudflareD1 struct {
+	*CloudflareWorker
+}
+
+func NewCloudflareD1(worker *CloudflareWorker) *CloudflareD1 {
+	return &CloudflareD1{
+		worker,
 	}
 }
 
@@ -275,7 +285,10 @@ func (c *CloudflareD1) InsertToken(object interface{}) (bool, error) {
 }
 
 func (c *CloudflareD1) List(pageIndex, pageSize int, object interface{}) error {
-	// TODO: Check if object is a pointer
+	// Check if object is a pointer
+	if reflect.TypeOf(object).Kind() != reflect.Ptr {
+		return fmt.Errorf("object must be a pointer")
+	}
 
 	url := fmt.Sprintf("%s/pools?page=%d&pageSize=%d", c.baseURL, pageIndex, pageSize)
 
@@ -309,7 +322,10 @@ func (c *CloudflareD1) List(pageIndex, pageSize int, object interface{}) error {
 }
 
 func (c *CloudflareD1) ListToken(pageIndex, pageSize int, object interface{}) error {
-	// TODO: Check if object is a pointer
+	// Check if object is a pointer
+	if reflect.TypeOf(object).Kind() != reflect.Ptr {
+		return fmt.Errorf("object must be a pointer")
+	}
 
 	url := fmt.Sprintf("%s/tokens?page=%d&pageSize=%d", c.baseURL, pageIndex, pageSize)
 
@@ -343,7 +359,10 @@ func (c *CloudflareD1) ListToken(pageIndex, pageSize int, object interface{}) er
 }
 
 func (c *CloudflareD1) Get(chainId, protocolName, poolAddress string, object interface{}) error {
-	// TODO: Check if object is a pointer
+	// Check if object is a pointer
+	if reflect.TypeOf(object).Kind() != reflect.Ptr {
+		return fmt.Errorf("object must be a pointer")
+	}
 
 	url := fmt.Sprintf("%s/pool?chain_id=%s&protocol_name=%s&pool_address=%s", c.baseURL, chainId, protocolName, poolAddress)
 
@@ -379,7 +398,10 @@ func (c *CloudflareD1) Get(chainId, protocolName, poolAddress string, object int
 }
 
 func (c *CloudflareD1) GetToken(tokenAddress string, object interface{}) error {
-	// TODO: Check if object is a pointer
+	// Check if object is a pointer
+	if reflect.TypeOf(object).Kind() != reflect.Ptr {
+		return fmt.Errorf("object must be a pointer")
+	}
 
 	url := fmt.Sprintf("%s/token?address=%s", c.baseURL, tokenAddress)
 
@@ -415,18 +437,12 @@ func (c *CloudflareD1) GetToken(tokenAddress string, object interface{}) error {
 }
 
 type CloudflareDurable struct {
-	baseURL    string
-	token      string
-	httpClient *http.Client
+	*CloudflareWorker
 }
 
-func NewCloudflareDurable() *CloudflareDurable {
+func NewCloudflareDurable(worker *CloudflareWorker) *CloudflareDurable {
 	return &CloudflareDurable{
-		baseURL: os.Getenv("worker_host"),
-		token:   os.Getenv("worker_token"),
-		httpClient: &http.Client{
-			Timeout: 5 * time.Second,
-		},
+		worker,
 	}
 }
 

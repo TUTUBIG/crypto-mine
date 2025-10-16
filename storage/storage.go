@@ -321,8 +321,8 @@ func (cs *CandleChartKVStorage) Store(tokenID string, interval time.Duration, ca
 	return nil
 }
 
-func (cs *CandleChartKVStorage) GetCandles(tokenID string, interval time.Duration, startTime, endTime int64, limit int) ([]*CandleData, error) {
-	return nil, nil
+func (cs *CandleChartKVStorage) GetCandles(_ string, _ time.Duration, _, _ int64, _ int) ([]*CandleData, error) {
+	return nil, fmt.Errorf("GetCandles not implemented")
 }
 
 func (cs *CandleChartKVStorage) GetLatestCandle(tokenID string, interval time.Duration) (*CandleData, error) {
@@ -375,11 +375,11 @@ type CandleChart struct {
 	publisher       *CloudflareDurable
 }
 
-func NewCandleChart() *CandleChart {
+func NewCandleChart(worker *CloudflareWorker) *CandleChart {
 	return &CandleChart{
 		data:            make(chan *RealtimeTradeData, 1000),
 		intervalCandles: make([]*IntervalCandleChart, 0),
-		publisher:       NewCloudflareDurable(),
+		publisher:       NewCloudflareDurable(worker),
 	}
 }
 
@@ -408,14 +408,6 @@ func (cc *CandleChart) StartAggregateCandleData() {
 
 	go func() {
 		for tradeData := range cc.data {
-			// Publish realtime data
-			data, err := tradeData.ToBytes()
-			if err != nil {
-				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
-			}
-			if _, err := cc.publisher.Publish(GenerateTokenId(tradeData.chainId, tradeData.tokenAddress), data); err != nil {
-				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
-			}
 			// Process each interval candle, ordered with time frame
 			for _, candle := range cc.intervalCandles {
 				currentCandle, found := candle.currentCandles[GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)]
@@ -455,6 +447,15 @@ func (cc *CandleChart) StartAggregateCandleData() {
 						Timestamp:  tradeData.TradeTime,
 					}
 				}
+			}
+
+			// Publish realtime data
+			data, err := tradeData.ToBytes()
+			if err != nil {
+				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
+			}
+			if _, err := cc.publisher.Publish(GenerateTokenId(tradeData.chainId, tradeData.tokenAddress), data); err != nil {
+				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
 			}
 		}
 	}()
