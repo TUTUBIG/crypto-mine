@@ -28,6 +28,11 @@ type Config struct {
 	LoadTimeout       time.Duration
 	HTTPClientTimeout time.Duration
 
+	// Alert system settings
+	AlertRefreshInterval time.Duration // How often to refresh watched tokens from database
+	EmailQPS             int           // Emails per second limit
+	TelegramQPS          int           // Telegram messages per second limit
+
 	// Debug settings
 	Debug bool
 }
@@ -54,6 +59,11 @@ func LoadConfig() *Config {
 		BufferSize:        getEnvInt("buffer_size", 10000), // Increased for better throughput
 		LoadTimeout:       getEnvDuration("load_timeout", 30*time.Second),
 		HTTPClientTimeout: getEnvDuration("http_timeout", 10*time.Second),
+
+		// Alert system settings
+		AlertRefreshInterval: getEnvDuration("alert_refresh_interval", 5*time.Minute),
+		EmailQPS:             getEnvInt("email_qps", 10),    // 10 emails per second
+		TelegramQPS:          getEnvInt("telegram_qps", 20), // 20 telegram messages per second
 
 		// Debug settings
 		Debug: getEnv("debug", "true") == "true",

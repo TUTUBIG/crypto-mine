@@ -369,10 +369,14 @@ func NewCandleChartKVStorage(engine KVDriver) *CandleChartKVStorage {
 	}
 }
 
+// CandleStoredCallback is called when a candle is stored (completed)
+type CandleStoredCallback func(chainId, tokenAddress string, candle *CandleData, interval time.Duration)
+
 type CandleChart struct {
 	data            chan *RealtimeTradeData
 	intervalCandles []*IntervalCandleChart
 	publisher       *CloudflareDurable
+	onCandleStored  CandleStoredCallback // Callback for when a candle is stored
 }
 
 func NewCandleChart(worker *CloudflareWorker) *CandleChart {
@@ -386,6 +390,11 @@ func NewCandleChart(worker *CloudflareWorker) *CandleChart {
 func (cc *CandleChart) RegisterIntervalCandle(ic *IntervalCandleChart) *CandleChart {
 	cc.intervalCandles = append(cc.intervalCandles, ic)
 	return cc
+}
+
+// SetCandleStoredCallback sets a callback that will be called when a candle is stored
+func (cc *CandleChart) SetCandleStoredCallback(callback CandleStoredCallback) {
+	cc.onCandleStored = callback
 }
 
 func (cc *CandleChart) AddCandle(chainId, tokenAddress string, tradeTime time.Time, amountUSD, amountToken, price float64) error {
@@ -433,9 +442,15 @@ func (cc *CandleChart) StartAggregateCandleData() {
 				} else {
 					// freeze the past candle and create a new one
 					slog.Debug("store candle", "token", tradeData.tokenAddress, "candle", currentCandle)
-					if err := candle.storage.Store(GenerateTokenId(tradeData.chainId, tradeData.tokenAddress), candle.interval, currentCandle); err != nil {
+					tokenIdStr := GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)
+					if err := candle.storage.Store(tokenIdStr, candle.interval, currentCandle); err != nil {
 						slog.Error("store candle error", "error", err.Error(), "candle", currentCandle)
 						break
+					}
+
+					// Trigger alert callback if registered
+					if cc.onCandleStored != nil {
+						cc.onCandleStored(tradeData.chainId, tradeData.tokenAddress, currentCandle, candle.interval)
 					}
 					candle.currentCandles[GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)] = &CandleData{
 						OpenPrice:  tradeData.Price,
