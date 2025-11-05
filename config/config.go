@@ -33,6 +33,17 @@ type Config struct {
 	EmailQPS             int           // Emails per second limit
 	TelegramQPS          int           // Telegram messages per second limit
 
+	// SMTP settings
+	SMTPHost     string // SMTP server host
+	SMTPPort     int    // SMTP server port
+	SMTPUsername string // SMTP username
+	SMTPPassword string // SMTP password
+	SMTPFrom     string // From email address
+	SMTPFromName string // From name
+
+	// Telegram settings
+	TelegramBotToken string // Telegram Bot API token
+
 	// Debug settings
 	Debug bool
 }
@@ -64,6 +75,17 @@ func LoadConfig() *Config {
 		AlertRefreshInterval: getEnvDuration("alert_refresh_interval", 5*time.Minute),
 		EmailQPS:             getEnvInt("email_qps", 10),    // 10 emails per second
 		TelegramQPS:          getEnvInt("telegram_qps", 20), // 20 telegram messages per second
+
+		// SMTP settings
+		SMTPHost:     getEnv("smtp_host", ""),
+		SMTPPort:     getEnvInt("smtp_port", 587),
+		SMTPUsername: getEnv("smtp_username", ""),
+		SMTPPassword: getEnv("smtp_password", ""),
+		SMTPFrom:     getEnv("smtp_from", ""),
+		SMTPFromName: getEnv("smtp_from_name", "Crypto Price Alert"),
+
+		// Telegram settings
+		TelegramBotToken: getEnv("telegram_bot_token", ""),
 
 		// Debug settings
 		Debug: getEnv("debug", "true") == "true",

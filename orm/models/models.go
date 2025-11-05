@@ -35,16 +35,17 @@ type Token struct {
 
 // WatchedToken represents a watched token with alert settings
 type WatchedToken struct {
-	ID          int      `json:"id"`
-	UserID      int      `json:"user_id"`
-	TokenID     int      `json:"token_id"`
-	Notes       *string  `json:"notes,omitempty"`
-	Interval1m  *float64 `json:"interval_1m,omitempty"`  // Price change threshold for 1 minute (percentage)
-	Interval5m  *float64 `json:"interval_5m,omitempty"`  // Price change threshold for 5 minutes (percentage)
-	Interval15m *float64 `json:"interval_15m,omitempty"` // Price change threshold for 15 minutes (percentage)
-	Interval1h  *float64 `json:"interval_1h,omitempty"`  // Price change threshold for 1 hour (percentage)
-	AlertActive bool     `json:"alert_active"`
-	CreatedAt   string   `json:"created_at"`
+	ID            int      `json:"id"`
+	UserID        int      `json:"user_id"`
+	TokenID       int      `json:"token_id"`
+	Notes         *string  `json:"notes,omitempty"`
+	Interval1m    *float64 `json:"interval_1m,omitempty"`  // Price change threshold for 1 minute (percentage)
+	Interval5m    *float64 `json:"interval_5m,omitempty"`  // Price change threshold for 5 minutes (percentage)
+	Interval15m   *float64 `json:"interval_15m,omitempty"` // Price change threshold for 15 minutes (percentage)
+	Interval1h    *float64 `json:"interval_1h,omitempty"`  // Price change threshold for 1 hour (percentage)
+	AlertActive   bool     `json:"alert_active"`
+	RecordRefresh bool     `json:"record_refresh"` // Flag to indicate this record needs to be synced with memory
+	CreatedAt     string   `json:"created_at"`
 
 	// Token details (from JOIN)
 	ChainID      string  `json:"chain_id"`
@@ -57,10 +58,13 @@ type WatchedToken struct {
 
 // NotificationPreferences represents user notification preferences
 type NotificationPreferences struct {
-	ID              int    `json:"id"`
-	UserID          int    `json:"user_id"`
-	EmailEnabled    bool   `json:"email_enabled"`
-	TelegramEnabled bool   `json:"telegram_enabled"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
+	ID              int     `json:"id"`
+	UserID          int     `json:"user_id"`
+	Email           *string `json:"email,omitempty"`
+	TelegramID      *string `json:"telegram_id,omitempty"`
+	EmailEnabled    bool    `json:"email_enabled"`
+	TelegramEnabled bool    `json:"telegram_enabled"`
+	RecordRefresh   bool    `json:"record_refresh"` // Flag to indicate this record needs to be synced with memory
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
 }

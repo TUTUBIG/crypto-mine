@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto-mine/config"
+	"crypto-mine/email"
 	"crypto-mine/manager"
 	"crypto-mine/orm"
 	"crypto-mine/parser"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	tgbotapi "github.com/TUTUBIG/telegram-bot-api/v5"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -37,8 +39,7 @@ func main() {
 	}
 
 	// Initialize storage systems
-	candleStorage := storage.NewCandleChartKVStorage(
-		storage.NewCloudflareKV(cfg.CFAccount, cfg.CFNamespace, cfg.CFAPIKey))
+	candleStorage := storage.NewCandleChartKVStorage(storage.NewCloudflareKV(cfg.CFAccount, cfg.CFNamespace, cfg.CFAPIKey))
 	cloudflareWorker := storage.NewCloudflareWorker(cfg.WorkerHost, cfg.WorkerToken)
 	cloudflareD1 := storage.NewCloudflareD1(cloudflareWorker)
 	poolStorage := storage.NewPoolInfo(cloudflareD1)
@@ -59,35 +60,84 @@ func main() {
 	}
 	defer watchedTokenManager.Stop()
 
-	// Initialize token ID cache
-	tokenIDCache := manager.NewTokenIDCache(ormClient, 10*time.Minute)
-	tokenIDCache.SetLogger(slog.Default())
-	tokenIDCache.Start()
-	defer tokenIDCache.Stop()
+	// Initialize user cache manager
+	userCacheManager := manager.NewUserCacheManager(ormClient, cfg.AlertRefreshInterval)
+	userCacheManager.SetLogger(slog.Default())
+	if err := userCacheManager.Start(); err != nil {
+		log.Fatalf("Failed to start user cache manager: %v", err)
+	}
+	defer userCacheManager.Stop()
 
 	// Initialize message queue
 	messageQueue := queue.NewMessageQueue(cfg.EmailQPS, cfg.TelegramQPS)
 	messageQueue.SetLogger(slog.Default())
 
-	// Set up email sender (placeholder - implement your email service here)
-	messageQueue.SetEmailSender(func(msg *queue.EmailMessage) error {
-		slog.Info("Email alert", "to", msg.To, "subject", msg.Subject)
-		// TODO: Implement email sending (SMTP, SendGrid, etc.)
-		return nil
-	})
+	// Set up email sender using SMTP
+	if cfg.SMTPHost != "" && cfg.SMTPFrom != "" {
+		emailClient := email.NewSMTPClient(&email.SMTPConfig{
+			Host:     cfg.SMTPHost,
+			Port:     cfg.SMTPPort,
+			Username: cfg.SMTPUsername,
+			Password: cfg.SMTPPassword,
+			From:     cfg.SMTPFrom,
+			FromName: cfg.SMTPFromName,
+			Logger:   slog.Default(),
+		})
+		messageQueue.SetEmailSender(func(msg *queue.EmailMessage) error {
+			return emailClient.SendEmailWithTLS(msg.To, msg.Subject, msg.Body)
+		})
+		slog.Info("SMTP email sender configured", "host", cfg.SMTPHost, "port", cfg.SMTPPort, "from", cfg.SMTPFrom)
+	} else {
+		// Fallback to placeholder if SMTP is not configured
+		messageQueue.SetEmailSender(func(msg *queue.EmailMessage) error {
+			slog.Warn("SMTP not configured, email not sent", "to", msg.To, "subject", msg.Subject)
+			return nil
+		})
+		slog.Warn("SMTP not configured, email sending disabled")
+	}
 
-	// Set up telegram sender (placeholder - implement your telegram service here)
-	messageQueue.SetTelegramSender(func(msg *queue.TelegramMessage) error {
-		slog.Info("Telegram alert", "chat_id", msg.ChatID, "text", msg.Text)
-		// TODO: Implement Telegram sending (Telegram Bot API)
-		return nil
-	})
+	// Set up telegram sender using Telegram Bot API
+	if cfg.TelegramBotToken != "" {
+		bot, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
+		if err != nil {
+			slog.Error("Failed to create Telegram bot", "error", err)
+			// Fallback to placeholder
+			messageQueue.SetTelegramSender(func(msg *queue.TelegramMessage) error {
+				slog.Warn("Telegram bot not configured, message not sent", "chat_id", msg.ChatID, "text", msg.Text)
+				return nil
+			})
+		} else {
+			bot.Debug = cfg.Debug
+			slog.Info("Telegram bot initialized", "username", bot.Self.UserName)
+			messageQueue.SetTelegramSender(func(msg *queue.TelegramMessage) error {
+				// Parse chat ID (could be int64 or string)
+				chatID, err := parseChatID(msg.ChatID)
+				if err != nil {
+					return fmt.Errorf("invalid chat ID: %w", err)
+				}
+				telegramMsg := tgbotapi.NewMessage(chatID, msg.Text)
+				telegramMsg.ParseMode = tgbotapi.ModeHTML
+				_, err = bot.Send(telegramMsg)
+				if err != nil {
+					return fmt.Errorf("failed to send Telegram message: %w", err)
+				}
+				return nil
+			})
+		}
+	} else {
+		// Fallback to placeholder if Telegram bot token is not configured
+		messageQueue.SetTelegramSender(func(msg *queue.TelegramMessage) error {
+			slog.Warn("Telegram bot token not configured, message not sent", "chat_id", msg.ChatID, "text", msg.Text)
+			return nil
+		})
+		slog.Warn("Telegram bot token not configured, Telegram sending disabled")
+	}
 
 	messageQueue.Start()
 	defer messageQueue.Stop()
 
 	// Initialize alert manager
-	alertManager := manager.NewAlertManager(watchedTokenManager, messageQueue)
+	alertManager := manager.NewAlertManager(watchedTokenManager, userCacheManager, messageQueue)
 	alertManager.SetLogger(slog.Default())
 
 	// Setup candle chart with configurable interval and alert integration
@@ -95,7 +145,7 @@ func main() {
 	candleChart := storage.NewCandleChart(cloudflareWorker).RegisterIntervalCandle(minuteChart)
 
 	// Hook alert manager into candle storage
-	setupAlertHook(candleChart, alertManager, tokenIDCache)
+	setupAlertHook(candleChart, alertManager)
 
 	candleChart.StartAggregateCandleData()
 
@@ -182,41 +232,43 @@ func monitorBuffers(chain *parser.EVMChain) {
 }
 
 // setupAlertHook hooks the alert manager into the candle storage process
-func setupAlertHook(candleChart *storage.CandleChart, alertManager *manager.AlertManager, tokenIDCache *manager.TokenIDCache) {
+func setupAlertHook(candleChart *storage.CandleChart, alertManager *manager.AlertManager) {
 	candleChart.SetCandleStoredCallback(func(chainId, tokenAddress string, candleData *storage.CandleData, interval time.Duration) {
-		// Get database token ID
-		dbTokenID, err := tokenIDCache.GetOrFetchDatabaseTokenID(chainId, tokenAddress)
-		if err != nil {
-			// Token not in database, skip alert processing
-			slog.Debug("Token not found in database, skipping alert",
-				"chain_id", chainId,
-				"token_address", tokenAddress,
-				"error", err)
-			return
-		}
-
 		// Convert interval to string format
 		intervalStr := formatInterval(interval)
 
 		// Convert CandleData to manager.Candle
 		alertCandle := &manager.Candle{
-			TokenID:   dbTokenID,
-			Timestamp: candleData.Timestamp,
-			Open:      candleData.OpenPrice,
-			High:      candleData.HighPrice,
-			Low:       candleData.LowPrice,
-			Close:     candleData.ClosePrice,
-			Volume:    candleData.VolumeUSD,
-			Interval:  intervalStr,
+			ChainID:      chainId,
+			TokenAddress: tokenAddress,
+			Timestamp:    candleData.Timestamp,
+			Open:         candleData.OpenPrice,
+			High:         candleData.HighPrice,
+			Low:          candleData.LowPrice,
+			Close:        candleData.ClosePrice,
+			Volume:       candleData.VolumeUSD,
+			Interval:     intervalStr,
 		}
 
 		// Process candle for alerts
 		if err := alertManager.ProcessCandle(alertCandle); err != nil {
 			slog.Error("Failed to process candle for alerts",
-				"token_id", dbTokenID,
+				"chain_id", chainId,
+				"token_address", tokenAddress,
 				"error", err)
 		}
 	})
+}
+
+// parseChatID parses a chat ID string to int64
+// Telegram chat IDs can be strings or int64, but the API expects int64
+func parseChatID(chatIDStr string) (int64, error) {
+	// Try to parse as int64
+	chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid chat ID format: %s", chatIDStr)
+	}
+	return chatID, nil
 }
 
 // formatInterval converts a time.Duration to interval string format
