@@ -13,13 +13,14 @@ import (
 const minimumInterval = time.Minute
 
 type CandleData struct {
-	OpenPrice  float64
-	ClosePrice float64
-	HighPrice  float64
-	LowPrice   float64
-	Volume     float64
-	VolumeUSD  float64
-	Timestamp  time.Time
+	OpenPrice        float64
+	ClosePrice       float64
+	HighPrice        float64
+	LowPrice         float64
+	Volume           float64
+	VolumeUSD        float64
+	Timestamp        time.Time
+	TransactionCount int64
 }
 
 func (cd *CandleData) refresh(amount, amountUSD, price float64) bool {
@@ -34,6 +35,7 @@ func (cd *CandleData) refresh(amount, amountUSD, price float64) bool {
 
 	cd.VolumeUSD += amountUSD
 	cd.Volume += amount
+	cd.TransactionCount++
 	return true
 }
 
@@ -65,7 +67,7 @@ func (cdl *CandleDataList) ToBytes() []byte {
 		return nil
 	}
 
-	// Calculate total size needed: each candle needs 7 float64s + 1 int64 = 8 * 8 = 64 bytes
+	// Calculate total size needed: each candle needs 6 float64s + 2 int64s = 8 * 8 = 64 bytes
 	// Plus 4 bytes for the count at the beginning
 	totalSize := 4 + len(*cdl)*64
 	data := make([]byte, totalSize)
@@ -126,6 +128,12 @@ func (cdl *CandleDataList) ToBytes() []byte {
 			data[offset+i] = byte(volOutBits >> (i * 8))
 		}
 		offset += 8
+
+		// TransactionCount (int64)
+		for i := 0; i < 8; i++ {
+			data[offset+i] = byte(candle.TransactionCount >> (i * 8))
+		}
+		offset += 8
 	}
 
 	return data
@@ -144,6 +152,7 @@ func (cdl *CandleDataList) FromBytes(data []byte) error {
 	// Read count of candles
 	count := int(data[0]) | int(data[1])<<8 | int(data[2])<<16 | int(data[3])<<24
 
+	// Calculate expected size: 4 bytes for count + count * 64 bytes per candle
 	expectedSize := 4 + count*64
 	if len(data) != expectedSize {
 		return fmt.Errorf("invalid data size: expected %d, got %d", expectedSize, len(data))
@@ -197,6 +206,12 @@ func (cdl *CandleDataList) FromBytes(data []byte) error {
 		volOutBits := uint64(data[offset]) | uint64(data[offset+1])<<8 | uint64(data[offset+2])<<16 | uint64(data[offset+3])<<24 |
 			uint64(data[offset+4])<<32 | uint64(data[offset+5])<<40 | uint64(data[offset+6])<<48 | uint64(data[offset+7])<<56
 		candle.Volume = *(*float64)(unsafe.Pointer(&volOutBits))
+		offset += 8
+
+		// Read TransactionCount (int64)
+		transactionCount := int64(data[offset]) | int64(data[offset+1])<<8 | int64(data[offset+2])<<16 | int64(data[offset+3])<<24 |
+			int64(data[offset+4])<<32 | int64(data[offset+5])<<40 | int64(data[offset+6])<<48 | int64(data[offset+7])<<56
+		candle.TransactionCount = transactionCount
 		offset += 8
 	}
 
@@ -279,9 +294,9 @@ func (cs *CandleChartKVStorage) Store(tokenID string, interval time.Duration, ca
 		return fmt.Errorf("candle data cannot be nil")
 	}
 
-	// Compose the key: tokenID-interval-date
+	// Compose the key: interval-date-tokenID
 	// Store whole candle, client will fetch this data only when the first time loading chart.
-	key := fmt.Sprintf("%s-%d-%s", tokenID, int(interval.Seconds()), candle.Timestamp.UTC().Format(time.DateOnly))
+	key := fmt.Sprintf("%d-%s-%s", int(interval.Seconds()), candle.Timestamp.UTC().Format(time.DateOnly), tokenID)
 
 	cache, ok := cs.cache[key]
 	if !ok {
@@ -313,7 +328,7 @@ func (cs *CandleChartKVStorage) Store(tokenID string, interval time.Duration, ca
 	}
 
 	// Store the latest candle, this is designed from polling the latest candle from client side.
-	currentKey := fmt.Sprintf("%s-%d-current", tokenID, int(interval.Seconds()))
+	currentKey := fmt.Sprintf("%d-current-%s", int(interval.Seconds()), tokenID)
 	if err := cs.engine.Store(currentKey, candle.ToBytes()); err != nil {
 		return err
 	}
@@ -326,7 +341,7 @@ func (cs *CandleChartKVStorage) GetCandles(_ string, _ time.Duration, _, _ int64
 }
 
 func (cs *CandleChartKVStorage) GetLatestCandle(tokenID string, interval time.Duration) (*CandleData, error) {
-	currentKey := fmt.Sprintf("%s-%d-current", tokenID, int(interval.Seconds()))
+	currentKey := fmt.Sprintf("%d-current-%s", int(interval.Seconds()), tokenID)
 	data, err := cs.engine.Load(currentKey)
 	if err != nil {
 		return nil, err
@@ -343,7 +358,7 @@ func (cs *CandleChartKVStorage) GetCandlesByTimeRange(tokenID string, interval t
 }
 
 func (cs *CandleChartKVStorage) GetRecentCandles(tokenID string, interval time.Duration) (CandleDataList, error) {
-	key := fmt.Sprintf("%s-%d-%s", tokenID, int(interval.Seconds()), time.Now().UTC().Format(time.DateOnly))
+	key := fmt.Sprintf("%d-%s-%s", int(interval.Seconds()), time.Now().UTC().Format(time.DateOnly), tokenID)
 
 	data, err := cs.engine.Load(key)
 	if err != nil {
@@ -422,13 +437,14 @@ func (cc *CandleChart) StartAggregateCandleData() {
 				currentCandle, found := candle.currentCandles[GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)]
 				if !found {
 					candle.currentCandles[GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)] = &CandleData{
-						OpenPrice:  tradeData.Price,
-						ClosePrice: tradeData.Price,
-						HighPrice:  tradeData.Price,
-						LowPrice:   tradeData.Price,
-						VolumeUSD:  tradeData.AmountUSD,
-						Volume:     tradeData.Amount,
-						Timestamp:  tradeData.TradeTime,
+						OpenPrice:        tradeData.Price,
+						ClosePrice:       tradeData.Price,
+						HighPrice:        tradeData.Price,
+						LowPrice:         tradeData.Price,
+						VolumeUSD:        tradeData.AmountUSD,
+						Volume:           tradeData.Amount,
+						Timestamp:        tradeData.TradeTime,
+						TransactionCount: 1,
 					}
 					continue
 				}
@@ -453,13 +469,14 @@ func (cc *CandleChart) StartAggregateCandleData() {
 						cc.onCandleStored(tradeData.chainId, tradeData.tokenAddress, currentCandle, candle.interval)
 					}
 					candle.currentCandles[GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)] = &CandleData{
-						OpenPrice:  tradeData.Price,
-						ClosePrice: tradeData.Price,
-						HighPrice:  tradeData.Price,
-						LowPrice:   tradeData.Price,
-						VolumeUSD:  tradeData.AmountUSD,
-						Volume:     tradeData.Amount,
-						Timestamp:  tradeData.TradeTime,
+						OpenPrice:        tradeData.Price,
+						ClosePrice:       tradeData.Price,
+						HighPrice:        tradeData.Price,
+						LowPrice:         tradeData.Price,
+						VolumeUSD:        tradeData.AmountUSD,
+						Volume:           tradeData.Amount,
+						Timestamp:        tradeData.TradeTime,
+						TransactionCount: 1,
 					}
 				}
 			}
