@@ -412,6 +412,11 @@ func (cc *CandleChart) SetCandleStoredCallback(callback CandleStoredCallback) {
 	cc.onCandleStored = callback
 }
 
+// GetCandleStoredCallback gets the current callback
+func (cc *CandleChart) GetCandleStoredCallback() CandleStoredCallback {
+	return cc.onCandleStored
+}
+
 func (cc *CandleChart) AddCandle(chainId, tokenAddress string, tradeTime time.Time, amountUSD, amountToken, price float64) error {
 	cc.data <- &RealtimeTradeData{
 		chainId:      chainId,

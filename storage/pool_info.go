@@ -266,3 +266,16 @@ func (pi *PoolInfo) setFetchDone(done bool) {
 	defer pi.fetchDoneMu.Unlock()
 	pi.fetchDone = done
 }
+
+// GetAllTokens returns all tokens from the cache
+func (pi *PoolInfo) GetAllTokens() []*TokenInfo {
+	pi.locker.RLock()
+	defer pi.locker.RUnlock()
+
+	tokens := make([]*TokenInfo, 0, len(pi.tokens))
+	for _, token := range pi.tokens {
+		tokens = append(tokens, token)
+	}
+
+	return tokens
+}

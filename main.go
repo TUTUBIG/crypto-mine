@@ -39,7 +39,8 @@ func main() {
 	}
 
 	// Initialize storage systems
-	candleStorage := storage.NewCandleChartKVStorage(storage.NewCloudflareKV(cfg.CFAccount, cfg.CFNamespace, cfg.CFAPIKey))
+	kvDriver := storage.NewCloudflareKV(cfg.CFAccount, cfg.CFNamespace, cfg.CFAPIKey)
+	candleStorage := storage.NewCandleChartKVStorage(kvDriver)
 	cloudflareWorker := storage.NewCloudflareWorker(cfg.WorkerHost, cfg.WorkerToken)
 	cloudflareD1 := storage.NewCloudflareD1(cloudflareWorker)
 	poolStorage := storage.NewPoolInfo(cloudflareD1)
@@ -140,12 +141,17 @@ func main() {
 	alertManager := manager.NewAlertManager(watchedTokenManager, userCacheManager, messageQueue)
 	alertManager.SetLogger(slog.Default())
 
+	// Initialize token analyzer for offline analysis
+	tokenAnalyzer := manager.NewTokenAnalyzer(poolStorage, candleStorage, cfg.CandleInterval, ormClient, kvDriver)
+	tokenAnalyzer.SetLogger(slog.Default())
+
 	// Setup candle chart with configurable interval and alert integration
 	minuteChart := storage.NewIntervalCandleChart(cfg.CandleInterval, candleStorage)
 	candleChart := storage.NewCandleChart(cloudflareWorker).RegisterIntervalCandle(minuteChart)
 
-	// Hook alert manager into candle storage
+	// Hook alert manager and token analyzer into candle storage
 	setupAlertHook(candleChart, alertManager)
+	setupTokenAnalyzerHook(candleChart, tokenAnalyzer)
 
 	candleChart.StartAggregateCandleData()
 
@@ -184,6 +190,9 @@ func main() {
 		"chain_id", ethChain.ChainID(),
 		"min_volume_usd", cfg.MinVolumeUSD,
 		"candle_interval", cfg.CandleInterval)
+
+	// Start periodic token ranking and tagging (every 5 minutes)
+	go startTokenRanking(tokenAnalyzer)
 
 	// Graceful shutdown handling
 	sigChan := make(chan os.Signal, 1)
@@ -260,6 +269,23 @@ func setupAlertHook(candleChart *storage.CandleChart, alertManager *manager.Aler
 	})
 }
 
+// setupTokenAnalyzerHook hooks the token analyzer into the candle storage process
+func setupTokenAnalyzerHook(candleChart *storage.CandleChart, tokenAnalyzer *manager.TokenAnalyzer) {
+	// Store the original callback
+	originalCallback := candleChart.GetCandleStoredCallback()
+
+	// Set a new callback that calls both the original and token analyzer
+	candleChart.SetCandleStoredCallback(func(chainId, tokenAddress string, candleData *storage.CandleData, interval time.Duration) {
+		// Call original callback if it exists
+		if originalCallback != nil {
+			originalCallback(chainId, tokenAddress, candleData, interval)
+		}
+
+		// Update token analyzer cache
+		tokenAnalyzer.UpdateCandleCache(chainId, tokenAddress, candleData, interval)
+	})
+}
+
 // parseChatID parses a chat ID string to int64
 // Telegram chat IDs can be strings or int64, but the API expects int64
 func parseChatID(chatIDStr string) (int64, error) {
@@ -290,5 +316,19 @@ func formatInterval(interval time.Duration) string {
 		}
 		hours := minutes / 60
 		return fmt.Sprintf("%dh", hours)
+	}
+}
+
+// startTokenRanking starts a periodic task to rank tokens and update tags in database
+func startTokenRanking(tokenAnalyzer *manager.TokenAnalyzer) {
+	// Run every 5 minutes
+	ticker := time.NewTicker(tokenAnalyzer.GetInterval())
+	defer ticker.Stop()
+
+	// Run periodically
+	for range ticker.C {
+		if err := tokenAnalyzer.RankAndUpdateTopTokens(); err != nil {
+			slog.Error("Failed to rank and update tokens", "error", err)
+		}
 	}
 }

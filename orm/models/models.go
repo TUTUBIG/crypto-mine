@@ -68,3 +68,11 @@ type NotificationPreferences struct {
 	CreatedAt       string  `json:"created_at"`
 	UpdatedAt       string  `json:"updated_at"`
 }
+
+// TokenTag represents a tag assigned to a token
+type TokenTag struct {
+	ID        int    `json:"id"`
+	TokenID   int    `json:"token_id"`
+	Tag       string `json:"tag"`
+	CreatedAt string `json:"created_at"`
+}
