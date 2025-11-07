@@ -159,7 +159,7 @@ func main() {
 	uniSwapV3 := parser.NewUniSwapV3()
 
 	// Create EVM chain monitor
-	ethChain, err := parser.NewEVMChain(poolStorage, candleChart, cfg.RPCEndpoint, cfg.WSEndpoint)
+	ethChain, err := parser.NewEVMChain(poolStorage, candleChart, cfg.RPCEndpoint, cfg.WSEndpoint, kvDriver, cfg.PollInterval)
 	if err != nil {
 		log.Fatalf("Failed to create EVM chain: %v", err)
 	}

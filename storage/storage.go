@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math"
 	"sort"
 	"time"
 	"unsafe"
 )
 
-const minimumInterval = time.Minute
+const (
+	minimumInterval = time.Minute
+	// VolumeUSDPrecision is the precision for volume USD calculations (1 decimal place)
+	VolumeUSDPrecision = 10.0
+)
 
 type CandleData struct {
 	OpenPrice        float64
@@ -23,6 +28,11 @@ type CandleData struct {
 	TransactionCount int64
 }
 
+// truncVolumeUSD truncates volume USD to 1 decimal place
+func truncVolumeUSD(volumeUSD float64) float64 {
+	return math.Round(volumeUSD*VolumeUSDPrecision) / VolumeUSDPrecision
+}
+
 func (cd *CandleData) refresh(amount, amountUSD, price float64) bool {
 
 	cd.ClosePrice = price
@@ -33,7 +43,7 @@ func (cd *CandleData) refresh(amount, amountUSD, price float64) bool {
 		cd.LowPrice = price
 	}
 
-	cd.VolumeUSD += amountUSD
+	cd.VolumeUSD = truncVolumeUSD(cd.VolumeUSD + amountUSD)
 	cd.Volume += amount
 	cd.TransactionCount++
 	return true
@@ -446,7 +456,7 @@ func (cc *CandleChart) StartAggregateCandleData() {
 						ClosePrice:       tradeData.Price,
 						HighPrice:        tradeData.Price,
 						LowPrice:         tradeData.Price,
-						VolumeUSD:        tradeData.AmountUSD,
+						VolumeUSD:        truncVolumeUSD(tradeData.AmountUSD),
 						Volume:           tradeData.Amount,
 						Timestamp:        tradeData.TradeTime,
 						TransactionCount: 1,
@@ -478,7 +488,7 @@ func (cc *CandleChart) StartAggregateCandleData() {
 						ClosePrice:       tradeData.Price,
 						HighPrice:        tradeData.Price,
 						LowPrice:         tradeData.Price,
-						VolumeUSD:        tradeData.AmountUSD,
+						VolumeUSD:        truncVolumeUSD(tradeData.AmountUSD),
 						Volume:           tradeData.Amount,
 						Timestamp:        tradeData.TradeTime,
 						TransactionCount: 1,

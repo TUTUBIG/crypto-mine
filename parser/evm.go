@@ -3,6 +3,8 @@ package parser
 import (
 	"context"
 	"crypto-mine/storage"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -10,6 +12,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -26,6 +29,9 @@ const (
 
 	// PricePrecision is the precision for price calculations (4 decimal places)
 	PricePrecision = 1e4
+
+	// VolumeUSDPrecision is the precision for volume USD calculations (1 decimal place)
+	VolumeUSDPrecision = 10.0
 )
 
 type EvmEngine struct {
@@ -97,9 +103,13 @@ type EVMChain struct {
 	nativeCoinWrapper        common.Address
 	realtimeNativeTokenPrice float64
 	tokens                   map[common.Address]*storage.TokenInfo
+	kvStorage                storage.KVDriver
+	lastProcessedBlock       uint64
+	lastProcessedBlockMutex  sync.RWMutex
+	pollInterval             time.Duration
 }
 
-func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string) (*EVMChain, error) {
+func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string, kvStorage storage.KVDriver, pollInterval time.Duration) (*EVMChain, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	rpcClient, err := ethclient.Dial(rpc)
@@ -123,20 +133,29 @@ func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string) 
 		return nil, fmt.Errorf("failed to get chain ID: %w", err)
 	}
 
-	return &EVMChain{
-		chainId:     chainId.String(),
-		ctx:         ctx,
-		cancel:      cancel,
-		poolInfo:    pi,
-		candleChart: cc,
-		endpoint:    rpc,
-		wsEndpoint:  ws,
-		logs:        make(chan types.Log, 10000), // Increased buffer size
-		trades:      make(chan *TradeInfo, 10000),
-		shutdown:    make(chan struct{}),
-		ethClient:   rpcClient,
-		wsClient:    wsClient,
-	}, nil
+	chain := &EVMChain{
+		chainId:      chainId.String(),
+		ctx:          ctx,
+		cancel:       cancel,
+		poolInfo:     pi,
+		candleChart:  cc,
+		endpoint:     rpc,
+		wsEndpoint:   ws,
+		logs:         make(chan types.Log, 10000), // Increased buffer size
+		trades:       make(chan *TradeInfo, 10000),
+		shutdown:     make(chan struct{}),
+		ethClient:    rpcClient,
+		wsClient:     wsClient,
+		kvStorage:    kvStorage,
+		pollInterval: pollInterval,
+	}
+
+	// Load last processed block number from KV store
+	if err := chain.loadLastProcessedBlock(); err != nil {
+		slog.Warn("Failed to load last processed block from KV store, starting from latest", "chain_id", chain.chainId, "error", err)
+	}
+
+	return chain, nil
 }
 
 func (e *EVMChain) PrintBuffer() {
@@ -165,25 +184,177 @@ func (e *EVMChain) RegisterProtocol(protocol DEXProtocol) *EVMChain {
 	return e
 }
 
-func (e *EVMChain) StartPumpLogs(filter ethereum.FilterQuery) error {
-	sub, err := e.wsClient.SubscribeFilterLogs(e.ctx, filter, e.logs)
-	if err != nil {
-		return fmt.Errorf("failed to subscribe to filter logs: %w", err)
+// loadLastProcessedBlock loads the last processed block number from KV store
+func (e *EVMChain) loadLastProcessedBlock() error {
+	if e.kvStorage == nil {
+		return fmt.Errorf("KV storage not initialized")
 	}
-	slog.Info("start monitoring pump logs", "chain id", e.chainId, "topics", filter.Topics)
-	e.subscriber = sub
 
-	// Monitor subscription errors
-	go func() {
-		select {
-		case err := <-sub.Err():
-			if err != nil {
-				slog.Error("subscription error", "chain", e.chainId, "error", err)
-			}
-		case <-e.ctx.Done():
-			return
+	key := fmt.Sprintf("last_block_%s", e.chainId)
+	data, err := e.kvStorage.Load(key)
+	if err != nil {
+		if errors.Is(err, storage.NotfoundError) {
+			// Key not found, start from 0
+			e.lastProcessedBlockMutex.Lock()
+			e.lastProcessedBlock = 0
+			e.lastProcessedBlockMutex.Unlock()
+			slog.Info("No previous block number found in KV store, starting from 0", "chain_id", e.chainId)
+			return nil
 		}
-	}()
+		return fmt.Errorf("failed to load last processed block: %w", err)
+	}
+
+	if len(data) != 8 {
+		return fmt.Errorf("invalid block number data length: expected 8 bytes, got %d", len(data))
+	}
+
+	blockNum := binary.BigEndian.Uint64(data)
+	e.lastProcessedBlockMutex.Lock()
+	e.lastProcessedBlock = blockNum
+	e.lastProcessedBlockMutex.Unlock()
+
+	slog.Info("Loaded last processed block from KV store", "chain_id", e.chainId, "block_number", blockNum)
+	return nil
+}
+
+// saveLastProcessedBlock saves the last processed block number to KV store
+func (e *EVMChain) saveLastProcessedBlock() error {
+	if e.kvStorage == nil {
+		return fmt.Errorf("KV storage not initialized")
+	}
+
+	e.lastProcessedBlockMutex.RLock()
+	blockNum := e.lastProcessedBlock
+	e.lastProcessedBlockMutex.RUnlock()
+
+	key := fmt.Sprintf("last_block_%s", e.chainId)
+	data := make([]byte, 8)
+	binary.BigEndian.PutUint64(data, blockNum)
+
+	if err := e.kvStorage.Store(key, data); err != nil {
+		return fmt.Errorf("failed to save last processed block: %w", err)
+	}
+
+	slog.Debug("Saved last processed block to KV store", "chain_id", e.chainId, "block_number", blockNum)
+	return nil
+}
+
+// getLastProcessedBlock returns the last processed block number
+func (e *EVMChain) getLastProcessedBlock() uint64 {
+	e.lastProcessedBlockMutex.RLock()
+	defer e.lastProcessedBlockMutex.RUnlock()
+	return e.lastProcessedBlock
+}
+
+// setLastProcessedBlock sets the last processed block number
+func (e *EVMChain) setLastProcessedBlock(blockNum uint64) {
+	e.lastProcessedBlockMutex.Lock()
+	defer e.lastProcessedBlockMutex.Unlock()
+	e.lastProcessedBlock = blockNum
+}
+
+func (e *EVMChain) StartPumpLogs(filter ethereum.FilterQuery) error {
+	slog.Info("start monitoring pump logs with long polling", "chain id", e.chainId, "topics", filter.Topics)
+
+	// Start long polling goroutine
+	go e.pollLogs(filter)
+
+	return nil
+}
+
+// pollLogs performs long polling to fetch logs
+func (e *EVMChain) pollLogs(filter ethereum.FilterQuery) {
+	pollInterval := e.pollInterval
+	if pollInterval <= 0 {
+		pollInterval = 1 * time.Second // Default to 1 second if not set
+	}
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	slog.Info("Starting long polling", "chain_id", e.chainId, "poll_interval", pollInterval)
+
+	for {
+		select {
+		case <-e.ctx.Done():
+			slog.Info("Polling stopped due to context cancellation", "chain_id", e.chainId)
+			return
+		case <-e.shutdown:
+			slog.Info("Polling stopped due to shutdown", "chain_id", e.chainId)
+			return
+		case <-ticker.C:
+			if err := e.fetchAndProcessLogs(filter); err != nil {
+				slog.Error("Failed to fetch and process logs", "chain_id", e.chainId, "error", err)
+			}
+		}
+	}
+}
+
+// fetchAndProcessLogs fetches logs from the blockchain and processes them
+func (e *EVMChain) fetchAndProcessLogs(filter ethereum.FilterQuery) error {
+	// Get latest block number
+	latestBlock, err := e.ethClient.BlockNumber(e.ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get latest block number: %w", err)
+	}
+
+	// Get last processed block
+	lastProcessed := e.getLastProcessedBlock()
+
+	// If last processed is 0, set it to latest (skip initial catch-up)
+	if lastProcessed == 0 {
+		e.setLastProcessedBlock(latestBlock)
+		slog.Info("Initial block number set to latest", "chain_id", e.chainId, "block_number", latestBlock)
+		return nil
+	}
+
+	// If latest is not bigger than last processed, no new blocks
+	if latestBlock <= lastProcessed {
+		return nil
+	}
+
+	// Limit block range to at most 10 blocks
+	const maxBlockRange = 10
+	blockRange := latestBlock - lastProcessed
+	if blockRange > maxBlockRange {
+		blockRange = maxBlockRange
+	}
+
+	// Calculate the actual toBlock (limited to maxBlockRange)
+	actualToBlock := lastProcessed + blockRange
+
+	// Fetch logs in the range [lastProcessed+1, actualToBlock]
+	fromBlock := big.NewInt(int64(lastProcessed + 1))
+	toBlock := big.NewInt(int64(actualToBlock))
+
+	filterQuery := ethereum.FilterQuery{
+		FromBlock: fromBlock,
+		ToBlock:   toBlock,
+		Addresses: filter.Addresses,
+		Topics:    filter.Topics,
+	}
+
+	logs, err := e.ethClient.FilterLogs(e.ctx, filterQuery)
+	if err != nil {
+		return fmt.Errorf("failed to filter logs: %w", err)
+	}
+
+	slog.Debug("Fetched logs from blockchain", "chain_id", e.chainId, "from_block", fromBlock, "to_block", toBlock, "log_count", len(logs), "latest_block", latestBlock, "remaining_blocks", latestBlock-actualToBlock)
+
+	// Process all logs - send them to the channel (in-memory)
+	for i := range logs {
+		select {
+		case <-e.ctx.Done():
+			return e.ctx.Err()
+		case <-e.shutdown:
+			return nil
+		case e.logs <- logs[i]:
+			// Log sent successfully to in-memory channel
+		}
+	}
+
+	// Update last processed block after successfully handling all logs in memory (sent to channel)
+	// Use actualToBlock instead of latestBlock to process in batches
+	e.setLastProcessedBlock(actualToBlock)
 
 	return nil
 }
@@ -221,6 +392,26 @@ func (e *EVMChain) StartAssemblyLine() {
 			case trade := <-e.trades:
 				if err := e.handleTradeInfo(trade); err != nil {
 					slog.Error("Failed to extract trade info", "err", err, "trade info", trade)
+				}
+			}
+		}
+	}()
+
+	// Periodic persistence to KV store (every 5 minutes)
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-e.shutdown:
+				slog.Info("Periodic persistence stopped", "network", e.chainId)
+				return
+			case <-ticker.C:
+				if err := e.saveLastProcessedBlock(); err != nil {
+					slog.Error("Failed to save last processed block periodically", "chain_id", e.chainId, "error", err)
+				} else {
+					slog.Debug("Periodically saved last processed block", "chain_id", e.chainId)
 				}
 			}
 		}
@@ -337,6 +528,11 @@ func truncAmount(amount float64) float64 {
 	return math.Max(float64(int64(amount*PricePrecision))/PricePrecision, 1/PricePrecision)
 }
 
+// truncVolumeUSD truncates volume USD to 1 decimal place
+func truncVolumeUSD(volumeUSD float64) float64 {
+	return math.Round(volumeUSD*VolumeUSDPrecision) / VolumeUSDPrecision
+}
+
 // priceCalculationResult holds the result of token price calculation
 type priceCalculationResult struct {
 	tokenAddress string
@@ -417,7 +613,7 @@ func handleStableCoin(pool *storage.PoolInfo, chainId, coinSymbol, coinAddress s
 		pool.AddToken(&storage.TokenInfo{
 			ChainId:        chainId,
 			TokenAddress:   coinAddress,
-			DailyVolumeUSD: usdAmount,
+			DailyVolumeUSD: truncVolumeUSD(usdAmount),
 			TokenName:      coinSymbol,
 			TokenSymbol:    coinSymbol,
 			Decimals:       coinDecimals,
@@ -428,7 +624,7 @@ func handleStableCoin(pool *storage.PoolInfo, chainId, coinSymbol, coinAddress s
 
 	if token.OnlyCache {
 		// Token exists in cache only, accumulate volume
-		token.DailyVolumeUSD += usdAmount
+		token.DailyVolumeUSD = truncVolumeUSD(token.DailyVolumeUSD + usdAmount)
 		if token.DailyVolumeUSD >= MinVolumeUSD {
 			// Volume threshold reached - store to DB
 			pool.StoreToken(token)
@@ -547,6 +743,13 @@ func (e *EVMChain) Stop() {
 		e.subscriber.Unsubscribe()
 	}
 	close(e.shutdown)
+
+	// Save last processed block to KV store on graceful shutdown
+	if err := e.saveLastProcessedBlock(); err != nil {
+		slog.Error("Failed to save last processed block on shutdown", "chain_id", e.chainId, "error", err)
+	} else {
+		slog.Info("Saved last processed block on graceful shutdown", "chain_id", e.chainId)
+	}
 
 	// Close clients
 	if e.ethClient != nil {
@@ -804,11 +1007,9 @@ func (u3 *UniSwapV3) ExtractTradeInfo(log *types.Log) (*TradeInfo, error) {
 		return nil, fmt.Errorf("failed to extract valid swap amounts from log %s", log.TxHash.Hex())
 	}
 
-	//TODO: Replace with block time, can't get this data from logs subscription
-	t := time.Now()
 	return &TradeInfo{
 		Protocol:    u3,
-		TradeTime:   t,
+		TradeTime:   time.Unix(int64(log.BlockTimestamp), 0),
 		PoolAddress: &log.Address,
 		Amount0:     amount0.Abs(amount0),
 		Amount1:     amount1.Abs(amount1),

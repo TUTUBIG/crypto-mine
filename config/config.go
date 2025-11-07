@@ -24,6 +24,7 @@ type Config struct {
 	MinVolumeUSD      float64
 	PricePrecision    float64
 	CandleInterval    time.Duration
+	PollInterval      time.Duration // Long polling interval for fetching logs
 	BufferSize        int
 	LoadTimeout       time.Duration
 	HTTPClientTimeout time.Duration
@@ -67,7 +68,8 @@ func LoadConfig() *Config {
 		MinVolumeUSD:      getEnvFloat("min_volume_usd", 1000.0), // $1000 minimum as specified
 		PricePrecision:    getEnvFloat("price_precision", 10000.0),
 		CandleInterval:    getEnvDuration("candle_interval", 5*time.Minute),
-		BufferSize:        getEnvInt("buffer_size", 10000), // Increased for better throughput
+		PollInterval:      getEnvDuration("poll_interval", 12*time.Second), // Long polling interval for fetching logs
+		BufferSize:        getEnvInt("buffer_size", 10000),                 // Increased for better throughput
 		LoadTimeout:       getEnvDuration("load_timeout", 30*time.Second),
 		HTTPClientTimeout: getEnvDuration("http_timeout", 10*time.Second),
 
