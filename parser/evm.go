@@ -37,11 +37,10 @@ type EvmEngine struct {
 
 func NewEVMEngine() *EvmEngine {
 	ctx, cancel := context.WithCancel(context.Background())
+	// For live WebSocket subscriptions, don't specify BlockHash, FromBlock, or ToBlock
+	// This creates a subscription for new blocks only
 	filter := ethereum.FilterQuery{
-		BlockHash: nil,
-		FromBlock: nil,
-		ToBlock:   nil,
-		Addresses: nil,
+		Addresses: []common.Address{}, // Empty slice instead of nil
 		Topics: [][]common.Hash{
 			{
 				common.HexToHash(swapV3Topic1),
