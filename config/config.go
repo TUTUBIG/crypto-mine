@@ -59,8 +59,8 @@ func LoadConfig() *Config {
 		WorkerToken: getEnv("worker_token", "ROHMxlZqCV-cNnQtHUsJUoBRASjVgZigU8vDL3YV"),
 
 		// Chain settings
-		RPCEndpoint: getEnv("rpc_endpoint", "https://capable-tiniest-knowledge.quiknode.pro/326754df17ae865cf46d044db09213ce7e2ec23b"),
-		WSEndpoint:  getEnv("ws_endpoint", "wss://capable-tiniest-knowledge.quiknode.pro/326754df17ae865cf46d044db09213ce7e2ec23b"),
+		RPCEndpoint: getEnv("rpc_endpoint", "https://eth-mainnet.g.alchemy.com/v2/5Bi_GkXdNyVCeJqq6uACT"),
+		WSEndpoint:  getEnv("ws_endpoint", "wss://eth-mainnet.g.alchemy.com/v2/5Bi_GkXdNyVCeJqq6uACT"),
 		EthPrice:    getEnvFloat("eth_price", 4035.2),
 
 		// Business logic settings - as per design document
@@ -73,7 +73,7 @@ func LoadConfig() *Config {
 
 		// Alert system settings
 		AlertRefreshInterval: getEnvDuration("alert_refresh_interval", 5*time.Minute),
-		EmailQPS:             getEnvInt("email_qps", 10),    // 10 emails per second
+		EmailQPS:             getEnvInt("email_qps", 1),     // 1 emails per second
 		TelegramQPS:          getEnvInt("telegram_qps", 20), // 20 telegram messages per second
 
 		// SMTP settings
