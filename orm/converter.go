@@ -52,8 +52,8 @@ func convertRowToModel(row map[string]interface{}, target interface{}) error {
 		fieldType := fieldInfo.fieldTypes[fieldIndex]
 
 		if err := setFieldValue(fieldValue, fieldType, dbValue); err != nil {
-			// Log error but continue with other fields
-			continue
+			// Return error instead of silently ignoring it
+			return fmt.Errorf("failed to set field %s (column %s): %w", fieldInfo.fieldNames[fieldIndex], dbKey, err)
 		}
 	}
 
@@ -69,6 +69,9 @@ func setFieldValue(fieldValue reflect.Value, fieldType reflect.Type, dbValue int
 	if dbValue == nil {
 		// Set zero value for nil
 		if fieldType.Kind() == reflect.Ptr {
+			fieldValue.Set(reflect.Zero(fieldType))
+		} else {
+			// For non-pointer fields, set to zero value
 			fieldValue.Set(reflect.Zero(fieldType))
 		}
 		return nil
@@ -180,6 +183,35 @@ func convertToString(val interface{}) (string, bool) {
 		return v, true
 	case []byte:
 		return string(v), true
+	case int:
+		return fmt.Sprintf("%d", v), true
+	case int8:
+		return fmt.Sprintf("%d", v), true
+	case int16:
+		return fmt.Sprintf("%d", v), true
+	case int32:
+		return fmt.Sprintf("%d", v), true
+	case int64:
+		return fmt.Sprintf("%d", v), true
+	case uint:
+		return fmt.Sprintf("%d", v), true
+	case uint8:
+		return fmt.Sprintf("%d", v), true
+	case uint16:
+		return fmt.Sprintf("%d", v), true
+	case uint32:
+		return fmt.Sprintf("%d", v), true
+	case uint64:
+		return fmt.Sprintf("%d", v), true
+	case float32:
+		return fmt.Sprintf("%g", v), true
+	case float64:
+		return fmt.Sprintf("%g", v), true
+	case bool:
+		if v {
+			return "true", true
+		}
+		return "false", true
 	default:
 		return "", false
 	}
@@ -192,8 +224,37 @@ func convertToBool(val interface{}) (bool, bool) {
 		return v, true
 	case int:
 		return v != 0, true
+	case int8:
+		return v != 0, true
+	case int16:
+		return v != 0, true
+	case int32:
+		return v != 0, true
+	case int64:
+		return v != 0, true
+	case uint:
+		return v != 0, true
+	case uint8:
+		return v != 0, true
+	case uint16:
+		return v != 0, true
+	case uint32:
+		return v != 0, true
+	case uint64:
+		return v != 0, true
+	case float32:
+		return v != 0, true
 	case float64:
 		return v != 0, true
+	case string:
+		// Handle string representations of booleans
+		switch v {
+		case "true", "1", "yes", "on":
+			return true, true
+		case "false", "0", "no", "off", "":
+			return false, true
+		}
+		return false, false
 	default:
 		return false, false
 	}
@@ -208,7 +269,23 @@ func convertToFloat(val interface{}) (float64, bool) {
 		return v, true
 	case int:
 		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
 	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint8:
+		return float64(v), true
+	case uint16:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
 		return float64(v), true
 	default:
 		return 0, false

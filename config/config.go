@@ -57,7 +57,7 @@ func LoadConfig() *Config {
 		CFNamespace: getEnv("cf_namespace", "d425adfc89ad4e9080629fb317a60f1b"),
 		CFAPIKey:    getEnv("cf_api_key", "ROHMxlZqCV-cNnQtHUsJUoBRASjVgZigU8vDL3YV"),
 		WorkerHost:  getEnv("worker_host", "https://crypto-pump.bigtutu.workers.dev"),
-		WorkerToken: getEnv("worker_token", "ROHMxlZqCV-cNnQtHUsJUoBRASjVgZigU8vDL3YV"),
+		WorkerToken: getEnv("worker_token", "8dac6dbd68790fa6deec035c5b9551b9"),
 
 		// Chain settings
 		RPCEndpoint: getEnv("rpc_endpoint", "https://eth-mainnet.g.alchemy.com/v2/5Bi_GkXdNyVCeJqq6uACT"),
@@ -87,7 +87,7 @@ func LoadConfig() *Config {
 		SMTPFromName: getEnv("smtp_from_name", "Crypto Price Alert"),
 
 		// Telegram settings
-		TelegramBotToken: getEnv("telegram_bot_token", ""),
+		TelegramBotToken: getEnv("telegram_bot_token", "7644440554:AAG0Y-Ytv-K6cK3KsmFy6-k1p2vEo-iQap8"),
 
 		// Debug settings
 		Debug: getEnv("debug", "true") == "true",

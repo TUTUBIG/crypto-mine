@@ -136,7 +136,13 @@ func (c *reflectCache) computeFieldInfo(t reflect.Type) *typeFieldInfo {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		fieldName := field.Name
-		columnName := toSnakeCase(fieldName)
+
+		// Get column name from JSON tag, fallback to snake_case if no tag
+		columnName := getColumnNameFromTag(field)
+		if columnName == "" {
+			// Fallback to snake_case if no JSON tag
+			columnName = toSnakeCase(fieldName)
+		}
 
 		info.fieldToColumn[fieldName] = columnName
 		info.columnToField[columnName] = i
@@ -147,7 +153,24 @@ func (c *reflectCache) computeFieldInfo(t reflect.Type) *typeFieldInfo {
 	return info
 }
 
+// getColumnNameFromTag extracts the column name from the JSON tag
+// Returns empty string if no JSON tag or tag is "-"
+func getColumnNameFromTag(field reflect.StructField) string {
+	jsonTag := field.Tag.Get("json")
+	if jsonTag == "" || jsonTag == "-" {
+		return ""
+	}
+
+	// JSON tag format: "column_name" or "column_name,omitempty"
+	// Extract just the column name part (before comma)
+	if idx := strings.Index(jsonTag, ","); idx != -1 {
+		return jsonTag[:idx]
+	}
+	return jsonTag
+}
+
 // getColumnName returns the database column name for a field
+// Uses JSON tag if available, otherwise falls back to snake_case
 func (c *reflectCache) getColumnName(t reflect.Type, fieldName string) (string, error) {
 	info := c.getFieldInfo(t)
 	if info == nil {

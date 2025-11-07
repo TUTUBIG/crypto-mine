@@ -473,16 +473,18 @@ func (cc *CandleChart) StartAggregateCandleData() {
 				} else {
 					// freeze the past candle and create a new one
 					slog.Debug("store candle", "token", tradeData.tokenAddress, "candle", currentCandle)
+
+					// Trigger alert callback if registered and with real time price
+					if cc.onCandleStored != nil && time.Now().Sub(tradeData.TradeTime) < time.Minute {
+						cc.onCandleStored(tradeData.chainId, tradeData.tokenAddress, currentCandle, candle.interval)
+					}
+
 					tokenIdStr := GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)
 					if err := candle.storage.Store(tokenIdStr, candle.interval, currentCandle); err != nil {
 						slog.Error("store candle error", "error", err.Error(), "candle", currentCandle)
 						break
 					}
 
-					// Trigger alert callback if registered
-					if cc.onCandleStored != nil {
-						cc.onCandleStored(tradeData.chainId, tradeData.tokenAddress, currentCandle, candle.interval)
-					}
 					candle.currentCandles[GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)] = &CandleData{
 						OpenPrice:        tradeData.Price,
 						ClosePrice:       tradeData.Price,
