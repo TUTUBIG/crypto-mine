@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -42,6 +43,7 @@ type TokenInfo struct {
 	Decimals       uint8   `json:"decimals"`
 	IconUrl        string  `json:"icon_url"`
 	DailyVolumeUSD float64 `json:"daily_volume_usd"`
+	IsSpecial      bool    `json:"is_special"`
 	OnlyCache      bool
 }
 
@@ -182,7 +184,7 @@ func (pi *PoolInfo) FindToken(chainId, tokenAddress string) *TokenInfo {
 
 	// Not in cache, try loading from DB if initial fetch is done
 	if !pi.isFetchDone() {
-		t = pi.LoadSingleToken(tokenAddress)
+		t = pi.LoadSingleToken(chainId, tokenAddress)
 		if t != nil {
 			t.OnlyCache = false
 			pi.locker.Lock()
@@ -193,14 +195,17 @@ func (pi *PoolInfo) FindToken(chainId, tokenAddress string) *TokenInfo {
 	return t
 }
 
-func (pi *PoolInfo) LoadSingleToken(tokenAddress string) *TokenInfo {
-	var token *TokenInfo
-	err := pi.db.GetToken(tokenAddress, token)
+func (pi *PoolInfo) LoadSingleToken(chainId, tokenAddress string) *TokenInfo {
+	var token TokenInfo
+	err := pi.db.GetToken(chainId, tokenAddress, &token)
 	if err != nil {
-		slog.Error("Failed to load token from database", "err", err, "token address", tokenAddress)
+		if errors.Is(err, NotfoundError) {
+			return nil
+		}
+		slog.Error("Failed to load token from database", "err", err, "chain_id", chainId, "token_address", tokenAddress)
 		return nil
 	}
-	return token
+	return &token
 }
 
 func (pi *PoolInfo) AsyncLoadTokens() {

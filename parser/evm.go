@@ -3,7 +3,6 @@ package parser
 import (
 	"context"
 	"crypto-mine/storage"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -90,9 +89,7 @@ type EVMChain struct {
 	cancel                   context.CancelFunc
 	shutdown                 chan struct{}
 	endpoint                 string
-	wsEndpoint               string
 	ethClient                *ethclient.Client
-	wsClient                 *ethclient.Client
 	subscriber               ethereum.Subscription
 	logs                     chan types.Log
 	trades                   chan *TradeInfo
@@ -109,7 +106,7 @@ type EVMChain struct {
 	pollInterval             time.Duration
 }
 
-func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string, kvStorage storage.KVDriver, pollInterval time.Duration) (*EVMChain, error) {
+func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc string, kvStorage storage.KVDriver, pollInterval time.Duration) (*EVMChain, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	rpcClient, err := ethclient.Dial(rpc)
@@ -118,18 +115,10 @@ func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string, 
 		return nil, fmt.Errorf("failed to connect to RPC endpoint: %w", err)
 	}
 
-	wsClient, err := ethclient.Dial(ws)
-	if err != nil {
-		cancel()
-		rpcClient.Close()
-		return nil, fmt.Errorf("failed to connect to WebSocket endpoint: %w", err)
-	}
-
 	chainId, err := rpcClient.ChainID(ctx)
 	if err != nil {
 		cancel()
 		rpcClient.Close()
-		wsClient.Close()
 		return nil, fmt.Errorf("failed to get chain ID: %w", err)
 	}
 
@@ -140,12 +129,10 @@ func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc, ws string, 
 		poolInfo:     pi,
 		candleChart:  cc,
 		endpoint:     rpc,
-		wsEndpoint:   ws,
 		logs:         make(chan types.Log, 10000), // Increased buffer size
 		trades:       make(chan *TradeInfo, 10000),
 		shutdown:     make(chan struct{}),
 		ethClient:    rpcClient,
-		wsClient:     wsClient,
 		kvStorage:    kvStorage,
 		pollInterval: pollInterval,
 	}
@@ -204,11 +191,11 @@ func (e *EVMChain) loadLastProcessedBlock() error {
 		return fmt.Errorf("failed to load last processed block: %w", err)
 	}
 
-	if len(data) != 8 {
-		return fmt.Errorf("invalid block number data length: expected 8 bytes, got %d", len(data))
+	blockNum, err := strconv.ParseUint(string(data), 0, 64)
+	if err != nil {
+		return fmt.Errorf("failed to parse block number: %w", err)
 	}
 
-	blockNum := binary.BigEndian.Uint64(data)
 	e.lastProcessedBlockMutex.Lock()
 	e.lastProcessedBlock = blockNum
 	e.lastProcessedBlockMutex.Unlock()
@@ -228,10 +215,7 @@ func (e *EVMChain) saveLastProcessedBlock() error {
 	e.lastProcessedBlockMutex.RUnlock()
 
 	key := fmt.Sprintf("last_block_%s", e.chainId)
-	data := make([]byte, 8)
-	binary.BigEndian.PutUint64(data, blockNum)
-
-	if err := e.kvStorage.Store(key, data); err != nil {
+	if err := e.kvStorage.Store(key, []byte(fmt.Sprintf("%d", blockNum))); err != nil {
 		return fmt.Errorf("failed to save last processed block: %w", err)
 	}
 
@@ -754,9 +738,6 @@ func (e *EVMChain) Stop() {
 	// Close clients
 	if e.ethClient != nil {
 		e.ethClient.Close()
-	}
-	if e.wsClient != nil {
-		e.wsClient.Close()
 	}
 }
 

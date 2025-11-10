@@ -17,7 +17,6 @@ type Config struct {
 
 	// Chain settings
 	RPCEndpoint string
-	WSEndpoint  string
 	EthPrice    float64
 
 	// Business logic settings
@@ -60,8 +59,7 @@ func LoadConfig() *Config {
 		WorkerToken: getEnv("worker_token", "8dac6dbd68790fa6deec035c5b9551b9"),
 
 		// Chain settings
-		RPCEndpoint: getEnv("rpc_endpoint", "https://eth-mainnet.g.alchemy.com/v2/5Bi_GkXdNyVCeJqq6uACT"),
-		WSEndpoint:  getEnv("ws_endpoint", "wss://eth-mainnet.g.alchemy.com/v2/5Bi_GkXdNyVCeJqq6uACT"),
+		RPCEndpoint: getEnv("rpc_endpoint", "https://rpc-eth.tomo.inc/NJsdfjac7aMAsjndncAoncjsdad8dn2JAmcaK"),
 		EthPrice:    getEnvFloat("eth_price", 4035.2),
 
 		// Business logic settings - as per design document

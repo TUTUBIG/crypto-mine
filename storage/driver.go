@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -239,6 +240,7 @@ func (c *CloudflareD1) Insert(object interface{}) (bool, error) {
 		return false, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", c.token)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -267,6 +269,7 @@ func (c *CloudflareD1) InsertToken(object interface{}) (bool, error) {
 		return false, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", c.token)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -290,15 +293,27 @@ func (c *CloudflareD1) List(pageIndex, pageSize int, object interface{}) error {
 		return fmt.Errorf("object must be a pointer")
 	}
 
-	url := fmt.Sprintf("%s/pools?page=%d&pageSize=%d", c.baseURL, pageIndex, pageSize)
+	// Use SQL query via /db/query endpoint
+	offset := (pageIndex - 1) * pageSize
+	sql := `SELECT id, chain_id, protocol, pool_address, pool_name, token_0_address, token_0_symbol, token_0_decimals, token_1_address, token_1_symbol, token_1_decimals FROM pool_info ORDER BY created_at DESC LIMIT ? OFFSET ?`
 
-	req, err := http.NewRequest("GET", url, nil)
+	requestBody := map[string]interface{}{
+		"sql":    sql,
+		"params": []interface{}{pageSize, offset},
+	}
+
+	bodyBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", c.baseURL+"/db/query", bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("X-API-Key", c.token)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -314,8 +329,50 @@ func (c *CloudflareD1) List(pageIndex, pageSize int, object interface{}) error {
 		return fmt.Errorf("remote API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(object); err != nil {
+	// Parse response
+	var apiResponse struct {
+		Success bool                     `json:"success"`
+		Data    []map[string]interface{} `json:"data,omitempty"`
+		Error   string                   `json:"error,omitempty"`
+	}
+
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&apiResponse); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if !apiResponse.Success {
+		return fmt.Errorf("API returned error: %s", apiResponse.Error)
+	}
+
+	// Convert results to slice of PairInfo
+	objValue := reflect.ValueOf(object).Elem()
+	sliceType := objValue.Type().Elem() // Get element type (e.g., PairInfo)
+
+	for _, row := range apiResponse.Data {
+		pairInfo := PairInfo{
+			ChainId:        getString(row["chain_id"]),
+			Protocol:       getString(row["protocol"]),
+			PoolAddress:    getString(row["pool_address"]),
+			PoolName:       getString(row["pool_name"]),
+			Token0Address:  getString(row["token_0_address"]),
+			Token0Symbol:   getString(row["token_0_symbol"]),
+			Token0Decimals: getUint8(row["token_0_decimals"]),
+			Token1Address:  getString(row["token_1_address"]),
+			Token1Symbol:   getString(row["token_1_symbol"]),
+			Token1Decimals: getUint8(row["token_1_decimals"]),
+		}
+
+		// Create new element and append to slice
+		if sliceType.Kind() == reflect.Ptr {
+			// If slice element is a pointer, create pointer to PairInfo
+			elemValue := reflect.New(reflect.TypeOf(pairInfo))
+			elemValue.Elem().Set(reflect.ValueOf(pairInfo))
+			objValue.Set(reflect.Append(objValue, elemValue))
+		} else {
+			// If slice element is a value, append directly
+			objValue.Set(reflect.Append(objValue, reflect.ValueOf(pairInfo)))
+		}
 	}
 
 	return nil
@@ -327,15 +384,27 @@ func (c *CloudflareD1) ListToken(pageIndex, pageSize int, object interface{}) er
 		return fmt.Errorf("object must be a pointer")
 	}
 
-	url := fmt.Sprintf("%s/tokens?page=%d&pageSize=%d", c.baseURL, pageIndex, pageSize)
+	// Use SQL query via /db/query endpoint
+	offset := (pageIndex - 1) * pageSize
+	sql := `SELECT id, chain_id, token_address, token_symbol, token_name, decimals, icon_url, daily_volume_usd, volume_updated_at, is_special, created_at, updated_at FROM tokens ORDER BY created_at DESC LIMIT ? OFFSET ?`
 
-	req, err := http.NewRequest("GET", url, nil)
+	requestBody := map[string]interface{}{
+		"sql":    sql,
+		"params": []interface{}{pageSize, offset},
+	}
+
+	bodyBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", c.baseURL+"/db/query", bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("X-API-Key", c.token)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -351,8 +420,49 @@ func (c *CloudflareD1) ListToken(pageIndex, pageSize int, object interface{}) er
 		return fmt.Errorf("remote API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(object); err != nil {
+	// Parse response
+	var apiResponse struct {
+		Success bool                     `json:"success"`
+		Data    []map[string]interface{} `json:"data,omitempty"`
+		Error   string                   `json:"error,omitempty"`
+	}
+
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&apiResponse); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if !apiResponse.Success {
+		return fmt.Errorf("API returned error: %s", apiResponse.Error)
+	}
+
+	// Convert results to slice of TokenInfo
+	objValue := reflect.ValueOf(object).Elem()
+	sliceType := objValue.Type().Elem() // Get element type (e.g., TokenInfo)
+
+	for _, row := range apiResponse.Data {
+		tokenInfo := TokenInfo{
+			ChainId:        getString(row["chain_id"]),
+			TokenAddress:   getString(row["token_address"]),
+			TokenSymbol:    getString(row["token_symbol"]),
+			TokenName:      getString(row["token_name"]),
+			Decimals:       getUint8(row["decimals"]),
+			IconUrl:        getString(row["icon_url"]),
+			DailyVolumeUSD: getFloat64(row["daily_volume_usd"]),
+			IsSpecial:      getBool(row["is_special"]),
+			OnlyCache:      false,
+		}
+
+		// Create new element and append to slice
+		if sliceType.Kind() == reflect.Ptr {
+			// If slice element is a pointer, create pointer to TokenInfo
+			elemValue := reflect.New(reflect.TypeOf(tokenInfo))
+			elemValue.Elem().Set(reflect.ValueOf(tokenInfo))
+			objValue.Set(reflect.Append(objValue, elemValue))
+		} else {
+			// If slice element is a value, append directly
+			objValue.Set(reflect.Append(objValue, reflect.ValueOf(tokenInfo)))
+		}
 	}
 
 	return nil
@@ -371,6 +481,8 @@ func (c *CloudflareD1) Get(chainId, protocolName, poolAddress string, object int
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", c.token)
+
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
@@ -397,19 +509,32 @@ func (c *CloudflareD1) Get(chainId, protocolName, poolAddress string, object int
 	return nil
 }
 
-func (c *CloudflareD1) GetToken(tokenAddress string, object interface{}) error {
+func (c *CloudflareD1) GetToken(chainId, tokenAddress string, object interface{}) error {
 	// Check if object is a pointer
 	if reflect.TypeOf(object).Kind() != reflect.Ptr {
 		return fmt.Errorf("object must be a pointer")
 	}
 
-	url := fmt.Sprintf("%s/token?address=%s", c.baseURL, tokenAddress)
+	// Use SQL query via /db/query endpoint
+	sql := `SELECT id, chain_id, token_address, token_symbol, token_name, decimals, icon_url, daily_volume_usd, volume_updated_at, is_special, created_at, updated_at FROM tokens WHERE chain_id = ? AND token_address = ? LIMIT 1`
 
-	req, err := http.NewRequest("GET", url, nil)
+	requestBody := map[string]interface{}{
+		"sql":    sql,
+		"params": []interface{}{chainId, tokenAddress},
+	}
+
+	bodyBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", c.baseURL+"/db/query", bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", c.token)
+
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
@@ -427,13 +552,99 @@ func (c *CloudflareD1) GetToken(tokenAddress string, object interface{}) error {
 		return fmt.Errorf("remote API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// TODO: Could be null
+	// Parse response
+	var apiResponse struct {
+		Success bool                     `json:"success"`
+		Data    []map[string]interface{} `json:"data,omitempty"`
+		Error   string                   `json:"error,omitempty"`
+	}
+
 	decoder := json.NewDecoder(resp.Body)
-	if err := decoder.Decode(object); err != nil {
+	if err := decoder.Decode(&apiResponse); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
 	}
 
+	if !apiResponse.Success {
+		return fmt.Errorf("API returned error: %s", apiResponse.Error)
+	}
+
+	if len(apiResponse.Data) == 0 {
+		return NotfoundError
+	}
+
+	// Convert map to struct
+	result := apiResponse.Data[0]
+
+	// Map database fields to TokenInfo struct
+	tokenInfo := TokenInfo{
+		ChainId:        getString(result["chain_id"]),
+		TokenAddress:   getString(result["token_address"]),
+		TokenSymbol:    getString(result["token_symbol"]),
+		TokenName:      getString(result["token_name"]),
+		Decimals:       getUint8(result["decimals"]),
+		IconUrl:        getString(result["icon_url"]),
+		DailyVolumeUSD: getFloat64(result["daily_volume_usd"]),
+		IsSpecial:      getBool(result["is_special"]),
+		OnlyCache:      false,
+	}
+
+	// Set the object value using reflection
+	// object is a pointer, so we need to get the element and set it
+	objValue := reflect.ValueOf(object).Elem()
+	objValue.Set(reflect.ValueOf(tokenInfo))
+
 	return nil
+}
+
+// Helper functions to safely extract values from map[string]interface{}
+func getString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func getUint8(v interface{}) uint8 {
+	if v == nil {
+		return 0
+	}
+	if f, ok := v.(float64); ok {
+		return uint8(f)
+	}
+	return 0
+}
+
+func getFloat64(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	if s, ok := v.(string); ok {
+		// Try to parse string as float
+		if parsed, err := strconv.ParseFloat(s, 64); err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func getBool(v interface{}) bool {
+	if v == nil {
+		return false
+	}
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	// SQLite returns 0/1 as float64
+	if f, ok := v.(float64); ok {
+		return f != 0
+	}
+	return false
 }
 
 type CloudflareDurable struct {
@@ -452,7 +663,7 @@ func (c *CloudflareDurable) Publish(tokenID string, data []byte) (bool, error) {
 		return false, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/binary")
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("X-API-Key", c.token)
 	req.Header.Set("Customized-Token-ID", tokenID)
 
 	resp, err := c.httpClient.Do(req)

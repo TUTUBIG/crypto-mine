@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,6 +45,17 @@ func main() {
 	cloudflareWorker := storage.NewCloudflareWorker(cfg.WorkerHost, cfg.WorkerToken)
 	cloudflareD1 := storage.NewCloudflareD1(cloudflareWorker)
 	poolStorage := storage.NewPoolInfo(cloudflareD1)
+
+	// Set up special token check function for candle storage
+	candleStorage.SetIsSpecialTokenFunc(func(tokenID string) bool {
+		// Parse tokenID: chainId-tokenAddress
+		parts := strings.Split(tokenID, "-")
+		if len(parts) != 2 {
+			return false
+		}
+		token := poolStorage.FindToken(parts[0], parts[1])
+		return token != nil && token.IsSpecial
+	})
 
 	// Load pools and tokens asynchronously
 	poolStorage.AsyncLoadPools()
@@ -159,7 +171,7 @@ func main() {
 	uniSwapV3 := parser.NewUniSwapV3()
 
 	// Create EVM chain monitor
-	ethChain, err := parser.NewEVMChain(poolStorage, candleChart, cfg.RPCEndpoint, cfg.WSEndpoint, kvDriver, cfg.PollInterval)
+	ethChain, err := parser.NewEVMChain(poolStorage, candleChart, cfg.RPCEndpoint, kvDriver, cfg.PollInterval)
 	if err != nil {
 		log.Fatalf("Failed to create EVM chain: %v", err)
 	}
@@ -204,6 +216,11 @@ func main() {
 	// Stop the engine gracefully
 	engine.Stop()
 
+	// Flush all pending candles to KV before shutdown
+	if err := candleStorage.Shutdown(); err != nil {
+		slog.Error("Failed to shutdown candle storage", "error", err)
+	}
+
 	slog.Info("Engine stopped successfully")
 }
 
@@ -224,9 +241,7 @@ func validateConfig(cfg *config.Config) error {
 	if cfg.RPCEndpoint == "" {
 		return fmt.Errorf("rpc_endpoint is required")
 	}
-	if cfg.WSEndpoint == "" {
-		return fmt.Errorf("ws_endpoint is required")
-	}
+
 	return nil
 }
 
