@@ -18,6 +18,18 @@ const (
 	VolumeUSDPrecision = 10.0
 )
 
+var (
+	// IntervalModNumbers maps time intervals to their mod numbers for KV key allocation
+	// Default: 1 minute = 1, 5 minutes = 5, 1 hour = 60
+	IntervalModNumbers = map[time.Duration]int{
+		time.Minute:        1,
+		5 * time.Minute:    5,
+		time.Hour:          60,
+		24 * time.Hour:     24 * 60,
+		7 * 24 * time.Hour: 7 * 24 * 60,
+	}
+)
+
 type CandleData struct {
 	OpenPrice        float64
 	ClosePrice       float64
@@ -303,6 +315,70 @@ type CandleChartKVStorage struct {
 	mu                 sync.RWMutex              // Mutex for thread-safe operations
 	shutdownChan       chan struct{}             // Channel to signal shutdown
 	flushDone          chan struct{}             // Channel to signal flush completion
+	intervalModNumbers map[time.Duration]int     // Custom mod numbers per interval (optional)
+}
+
+// SetIntervalModNumbers allows configuring custom mod numbers for different intervals
+func (cs *CandleChartKVStorage) SetIntervalModNumbers(modNumbers map[time.Duration]int) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.intervalModNumbers = modNumbers
+}
+
+// getModNumber returns the mod number for a given interval
+func (cs *CandleChartKVStorage) getModNumber(interval time.Duration) int {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+
+	// Check custom mod numbers first
+	if cs.intervalModNumbers != nil {
+		if mod, ok := cs.intervalModNumbers[interval]; ok {
+			return mod
+		}
+	}
+
+	// Fall back to default mod numbers
+	if mod, ok := IntervalModNumbers[interval]; ok {
+		return mod
+	}
+
+	// Default: use interval in minutes as mod number
+	return int(interval.Minutes())
+}
+
+// getYearDay calculates the day of year (1-365/366)
+func getYearDay(timestamp time.Time) int {
+	return timestamp.UTC().YearDay()
+}
+
+// GenerateCandleKVKey generates a KV key for a candle based on the new allocation logic:
+// 1. Get year and year day (day of year, 1-365/366)
+// 2. Get mod number based on interval
+// 3. Key format: {year}-{year_day % mod_number}-{tokenId}
+func GenerateCandleKVKey(tokenID string, interval time.Duration, timestamp time.Time, modNumbers map[time.Duration]int) string {
+	// Get year and year day
+	year := timestamp.UTC().Year()
+	yearDay := getYearDay(timestamp)
+
+	// Get mod number for this interval
+	var modNumber int
+	if modNumbers != nil {
+		if mod, ok := modNumbers[interval]; ok {
+			modNumber = mod
+		}
+	}
+
+	if modNumber == 0 {
+		return fmt.Sprintf("%d-%d-%s", int64(interval.Seconds()), year, tokenID)
+	}
+
+	// Calculate: year_day % mod_number
+	modResult := yearDay / modNumber
+
+	// Generate key: {year}-{year_day % mod_number}-{tokenId}
+	key := fmt.Sprintf("%d-%d-%d-%s", int64(interval.Seconds()), year, modResult, tokenID)
+
+	return key
 }
 
 func (cs *CandleChartKVStorage) Store(tokenID string, interval time.Duration, candle *CandleData) error {
@@ -310,8 +386,8 @@ func (cs *CandleChartKVStorage) Store(tokenID string, interval time.Duration, ca
 		return fmt.Errorf("candle data cannot be nil")
 	}
 
-	// Compose the key: interval-date-tokenID
-	key := fmt.Sprintf("%d-%s-%s", int(interval.Seconds()), candle.Timestamp.UTC().Format(time.DateOnly), tokenID)
+	// Generate KV key using new allocation logic
+	key := GenerateCandleKVKey(tokenID, interval, candle.Timestamp, cs.intervalModNumbers)
 
 	// Check if token is special
 	isSpecial := cs.isSpecialToken != nil && cs.isSpecialToken(tokenID)
@@ -409,6 +485,7 @@ func (cs *CandleChartKVStorage) FlushPendingCandles() error {
 		}
 
 		// Store merged candles to KV
+		slog.Debug("Flushed pending candles for key", "key", key)
 		if err := cs.engine.Store(key, existingCandles.ToBytes()); err != nil {
 			slog.Error("Failed to flush candles to KV", "key", key, "error", err)
 			continue

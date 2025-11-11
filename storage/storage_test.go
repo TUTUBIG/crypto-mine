@@ -156,3 +156,61 @@ func TestCandleChartKVStorage_Load(t *testing.T) {
 	}
 	t.Logf("%+v", candles)
 }
+
+func TestGenerateCandleKVKey(t *testing.T) {
+	// Fixed datetime: 2025-Nov-11 18:15 UTC
+	fixedTime := time.Date(2025, time.November, 11, 18, 15, 0, 0, time.UTC)
+
+	modNumbers := make(map[time.Duration]int)
+	modNumbers[time.Minute] = 1
+	modNumbers[time.Minute*5] = 5
+	modNumbers[time.Hour] = 12
+	modNumbers[time.Hour*24] = 288
+
+	tokenID := "1-0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+
+	// Test case 1: 1 minute interval (mod 1)
+	key1 := GenerateCandleKVKey(tokenID, time.Minute, fixedTime, modNumbers)
+	// 2025-315-1: year=2025, yearDay=315, 315%1=0
+	expected1 := "60-2025-315-" + tokenID
+	if key1 != expected1 {
+		t.Errorf("Expected key %s, got %s", expected1, key1)
+	}
+	t.Logf("Nov 11 18:15, 2025, 1min interval: %s", key1)
+
+	// Test case 2: 5 minute interval (mod 5)
+	key2 := GenerateCandleKVKey(tokenID, 5*time.Minute, fixedTime, modNumbers)
+	// 2025-315-5: year=2025, yearDay=315, 315%5=0
+	expected2 := "300-2025-63-" + tokenID
+	if key2 != expected2 {
+		t.Errorf("Expected key %s, got %s", expected2, key2)
+	}
+	t.Logf("Nov 11 18:15, 2025, 5min interval: %s", key2)
+
+	// Test case 3: 1 hour interval (mod 12)
+	key3 := GenerateCandleKVKey(tokenID, time.Hour, fixedTime, modNumbers)
+	// 2025-315-12: year=2025, yearDay=315, 315%12=3
+	expected3 := "3600-2025-26-" + tokenID
+	if key3 != expected3 {
+		t.Errorf("Expected key %s, got %s", expected3, key3)
+	}
+	t.Logf("Nov 11 18:15, 2025, 1hour interval: %s", key3)
+
+	// Test case 4: 24 hour interval (mod 288)
+	key4 := GenerateCandleKVKey(tokenID, 24*time.Hour, fixedTime, modNumbers)
+	// 2025-315-288: year=2025, yearDay=315, 315%288=27
+	expected4 := "86400-2025-1-" + tokenID
+	if key4 != expected4 {
+		t.Errorf("Expected key %s, got %s", expected4, key4)
+	}
+	t.Logf("Nov 11 18:15, 2025, 24hour interval: %s", key4)
+
+	// Test case 4: one-week interval (mod 0)
+	key5 := GenerateCandleKVKey(tokenID, 24*time.Hour*7, fixedTime, modNumbers)
+	// 2025-315-288: year=2025, yearDay=315, 315%288=27
+	expected5 := "604800-2025-" + tokenID
+	if key5 != expected5 {
+		t.Errorf("Expected key %s, got %s", expected5, key5)
+	}
+	t.Logf("Nov 11 18:15, 2025, 1-week interval: %s", key5)
+}
