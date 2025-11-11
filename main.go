@@ -42,6 +42,7 @@ func main() {
 	// Initialize storage systems
 	kvDriver := storage.NewCloudflareKV(cfg.CFAccount, cfg.CFNamespace, cfg.CFAPIKey)
 	candleStorage := storage.NewCandleChartKVStorage(kvDriver)
+	candleStorage.SetIntervalModNumbers(storage.IntervalModNumbers)
 	cloudflareWorker := storage.NewCloudflareWorker(cfg.WorkerHost, cfg.WorkerToken)
 	cloudflareD1 := storage.NewCloudflareD1(cloudflareWorker)
 	poolStorage := storage.NewPoolInfo(cloudflareD1)
@@ -160,6 +161,17 @@ func main() {
 	// Setup candle chart with configurable interval and alert integration
 	minuteChart := storage.NewIntervalCandleChart(cfg.CandleInterval, candleStorage)
 	candleChart := storage.NewCandleChart(cloudflareWorker).RegisterIntervalCandle(minuteChart)
+
+	// Set up special token check function for rate limiting realtime price updates
+	candleChart.SetIsSpecialTokenFunc(func(tokenID string) bool {
+		// Parse tokenID: chainId-tokenAddress
+		parts := strings.Split(tokenID, "-")
+		if len(parts) != 2 {
+			return false
+		}
+		token := poolStorage.FindToken(parts[0], parts[1])
+		return token != nil && token.IsSpecial
+	})
 
 	// Hook alert manager and token analyzer into candle storage
 	setupAlertHook(candleChart, alertManager)
