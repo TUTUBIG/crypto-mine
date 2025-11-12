@@ -373,14 +373,17 @@ type CandleDataStorage interface {
 }
 
 type CandleChartKVStorage struct {
-	cache              map[string]CandleDataList
-	engine             KVDriver
-	pendingRegularKeys map[string]CandleDataList // Batched candles for regular tokens (key -> candles)
-	isSpecialToken     func(tokenID string) bool // Function to check if token is special
-	mu                 sync.RWMutex              // Mutex for thread-safe operations
-	shutdownChan       chan struct{}             // Channel to signal shutdown
-	flushDone          chan struct{}             // Channel to signal flush completion
-	intervalModNumbers map[time.Duration]int     // Custom mod numbers per interval (optional)
+	cache               map[string]CandleDataList
+	engine              KVDriver
+	pendingRegularKeys  map[string]CandleDataList // Batched candles for regular tokens (key -> candles)
+	pendingSpecialKeys  map[string]CandleDataList // Batched candles for special tokens (key -> candles)
+	isSpecialToken      func(tokenID string) bool // Function to check if token is special
+	mu                  sync.RWMutex              // Mutex for thread-safe operations
+	shutdownChan        chan struct{}             // Channel to signal shutdown
+	flushDone           chan struct{}             // Channel to signal flush completion
+	specialShutdownChan chan struct{}             // Channel to signal special token flush shutdown
+	specialFlushDone    chan struct{}             // Channel to signal special token flush completion
+	intervalModNumbers  map[time.Duration]int     // Custom mod numbers per interval (optional)
 }
 
 // SetIntervalModNumbers allows configuring custom mod numbers for different intervals
@@ -457,13 +460,25 @@ func (cs *CandleChartKVStorage) Store(tokenID string, interval time.Duration, ca
 	// Check if token is special
 	isSpecial := cs.isSpecialToken != nil && cs.isSpecialToken(tokenID)
 
+	cs.mu.Lock()
 	if isSpecial {
-		// Special tokens: store immediately
-		return cs.storeImmediately(key, candle)
+		// Special tokens: batch in memory, flush every 30 minutes
+		if cs.pendingSpecialKeys == nil {
+			cs.pendingSpecialKeys = make(map[string]CandleDataList)
+		}
+
+		// Get or create pending candles list for this key
+		pending, exists := cs.pendingSpecialKeys[key]
+		if !exists {
+			pending = make(CandleDataList, 0)
+		}
+		pending = append(pending, *candle)
+		cs.pendingSpecialKeys[key] = pending
+		cs.mu.Unlock()
+		return nil
 	}
 
-	// Regular tokens: batch in memory
-	cs.mu.Lock()
+	// Regular tokens: batch in memory, flush every 3 hours
 	if cs.pendingRegularKeys == nil {
 		cs.pendingRegularKeys = make(map[string]CandleDataList)
 	}
@@ -513,21 +528,32 @@ func (cs *CandleChartKVStorage) storeImmediately(key string, candle *CandleData)
 
 // FlushPendingCandles flushes all pending regular token candles to KV
 func (cs *CandleChartKVStorage) FlushPendingCandles() error {
+	return cs.flushPendingCandles(&cs.pendingRegularKeys, "regular")
+}
+
+// FlushPendingSpecialCandles flushes all pending special token candles to KV
+func (cs *CandleChartKVStorage) FlushPendingSpecialCandles() error {
+	return cs.flushPendingCandles(&cs.pendingSpecialKeys, "special")
+}
+
+// flushPendingCandles is a helper function to flush pending candles from a given map
+func (cs *CandleChartKVStorage) flushPendingCandles(pendingMap *map[string]CandleDataList, tokenType string) error {
 	cs.mu.Lock()
-	if len(cs.pendingRegularKeys) == 0 {
+	if len(*pendingMap) == 0 {
 		cs.mu.Unlock()
 		return nil
 	}
 
 	// Copy pending keys to avoid holding lock during KV operations
 	pendingCopy := make(map[string]CandleDataList)
-	for k, v := range cs.pendingRegularKeys {
+	for k, v := range *pendingMap {
 		pendingCopy[k] = v
 	}
-	cs.pendingRegularKeys = make(map[string]CandleDataList)
+	*pendingMap = make(map[string]CandleDataList)
 	cs.mu.Unlock()
 
 	// Flush each pending key to KV
+	var i int
 	for key, candles := range pendingCopy {
 		// Load existing candles from KV
 		data, err := cs.engine.Load(key)
@@ -545,14 +571,15 @@ func (cs *CandleChartKVStorage) FlushPendingCandles() error {
 			existingCandles = candles
 		} else {
 			// Error loading, skip this key
-			slog.Error("Failed to load existing candles for flush", "key", key, "error", err)
+			slog.Error("Failed to load existing candles for flush", "key", key, "token_type", tokenType, "error", err)
 			continue
 		}
 
 		// Store merged candles to KV
-		slog.Debug("Flushed pending candles", "key", key)
+		i++
+		slog.Debug("Flushed pending candles", "key", key, "token_type", tokenType, "process", i, "total", len(pendingCopy))
 		if err := cs.engine.Store(key, existingCandles.ToBytes()); err != nil {
-			slog.Error("Failed to flush candles to KV", "key", key, "error", err)
+			slog.Error("Failed to flush candles to KV", "key", key, "token_type", tokenType, "error", err)
 			continue
 		}
 
@@ -562,7 +589,7 @@ func (cs *CandleChartKVStorage) FlushPendingCandles() error {
 		cs.mu.Unlock()
 	}
 
-	slog.Info("Flushed pending candles to KV", "count", len(pendingCopy))
+	slog.Info("Flushed pending candles to KV", "token_type", tokenType, "count", len(pendingCopy))
 	return nil
 }
 
@@ -612,15 +639,21 @@ func (cs *CandleChartKVStorage) GetRecentCandles(tokenID string, interval time.D
 
 func NewCandleChartKVStorage(engine KVDriver) *CandleChartKVStorage {
 	cs := &CandleChartKVStorage{
-		cache:              make(map[string]CandleDataList),
-		engine:             engine,
-		pendingRegularKeys: make(map[string]CandleDataList),
-		shutdownChan:       make(chan struct{}),
-		flushDone:          make(chan struct{}),
+		cache:               make(map[string]CandleDataList),
+		engine:              engine,
+		pendingRegularKeys:  make(map[string]CandleDataList),
+		pendingSpecialKeys:  make(map[string]CandleDataList),
+		shutdownChan:        make(chan struct{}),
+		flushDone:           make(chan struct{}),
+		specialShutdownChan: make(chan struct{}),
+		specialFlushDone:    make(chan struct{}),
 	}
 
-	// Start hourly flush goroutine for regular tokens
-	go cs.startHourlyFlush()
+	// Start 3-hour flush goroutine for regular tokens
+	go cs.startRegularFlush()
+
+	// Start 30-minute flush goroutine for special tokens
+	go cs.startSpecialFlush()
 
 	return cs
 }
@@ -632,23 +665,45 @@ func (cs *CandleChartKVStorage) SetIsSpecialTokenFunc(fn func(tokenID string) bo
 	cs.isSpecialToken = fn
 }
 
-// startHourlyFlush starts a goroutine that flushes pending candles every hour
-func (cs *CandleChartKVStorage) startHourlyFlush() {
-	ticker := time.NewTicker(1 * time.Hour)
+// startRegularFlush starts a goroutine that flushes pending regular token candles every 3 hours
+func (cs *CandleChartKVStorage) startRegularFlush() {
+	ticker := time.NewTicker(3 * time.Hour)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
 			if err := cs.FlushPendingCandles(); err != nil {
-				slog.Error("Failed to flush pending candles", "error", err)
+				slog.Error("Failed to flush pending regular candles", "error", err)
 			}
 		case <-cs.shutdownChan:
 			// Final flush on shutdown
 			if err := cs.FlushPendingCandles(); err != nil {
-				slog.Error("Failed to flush pending candles on shutdown", "error", err)
+				slog.Error("Failed to flush pending regular candles on shutdown", "error", err)
 			}
 			close(cs.flushDone)
+			return
+		}
+	}
+}
+
+// startSpecialFlush starts a goroutine that flushes pending special token candles every 30 minutes
+func (cs *CandleChartKVStorage) startSpecialFlush() {
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := cs.FlushPendingSpecialCandles(); err != nil {
+				slog.Error("Failed to flush pending special candles", "error", err)
+			}
+		case <-cs.specialShutdownChan:
+			// Final flush on shutdown
+			if err := cs.FlushPendingSpecialCandles(); err != nil {
+				slog.Error("Failed to flush pending special candles on shutdown", "error", err)
+			}
+			close(cs.specialFlushDone)
 			return
 		}
 	}
@@ -658,14 +713,33 @@ func (cs *CandleChartKVStorage) startHourlyFlush() {
 func (cs *CandleChartKVStorage) Shutdown() error {
 	slog.Info("Shutting down CandleChartKVStorage, flushing all pending candles...")
 	close(cs.shutdownChan)
+	close(cs.specialShutdownChan)
 
-	// Wait for flush to complete (with timeout)
-	select {
-	case <-cs.flushDone:
-		slog.Info("All pending candles flushed successfully")
-	case <-time.After(5 * time.Minute):
-		slog.Warn("Flush timeout, some candles may not have been flushed")
-	}
+	// Wait for both flush goroutines to complete (with timeout)
+	done := make(chan bool, 2)
+	go func() {
+		select {
+		case <-cs.flushDone:
+			done <- true
+		case <-time.After(5 * time.Minute):
+			slog.Warn("Regular token flush timeout, some candles may not have been flushed")
+			done <- true
+		}
+	}()
+	go func() {
+		select {
+		case <-cs.specialFlushDone:
+			done <- true
+		case <-time.After(5 * time.Minute):
+			slog.Warn("Special token flush timeout, some candles may not have been flushed")
+			done <- true
+		}
+	}()
+
+	// Wait for both to complete
+	<-done
+	<-done
+	slog.Info("All pending candles flushed successfully")
 
 	return nil
 }
