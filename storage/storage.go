@@ -26,7 +26,7 @@ var (
 		5 * time.Minute:    5,
 		time.Hour:          60,
 		24 * time.Hour:     24 * 60,
-		7 * 24 * time.Hour: 7 * 24 * 60,
+		7 * 24 * time.Hour: 0,
 	}
 )
 
@@ -160,6 +160,71 @@ func (cdl *CandleDataList) ToBytes() []byte {
 	}
 
 	return data
+}
+
+// FillGaps fills gaps in candle data by inserting empty candles for missing intervals
+// Empty candles have OHLC set to the previous candle's close price
+func (cdl CandleDataList) FillGaps(interval time.Duration) CandleDataList {
+	if len(cdl) == 0 {
+		return cdl
+	}
+
+	// Sort candles by timestamp to ensure proper gap detection
+	sorted := make(CandleDataList, len(cdl))
+	copy(sorted, cdl)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Timestamp.Before(sorted[j].Timestamp)
+	})
+
+	filledCandles := make(CandleDataList, 0)
+	intervalSeconds := int64(interval.Seconds())
+
+	for i := 0; i < len(sorted); i++ {
+		currentCandle := sorted[i]
+
+		// Always add the current candle
+		filledCandles = append(filledCandles, currentCandle)
+
+		// Check if there's a gap before the next candle
+		if i < len(sorted)-1 {
+			nextCandle := sorted[i+1]
+			timeDiff := nextCandle.Timestamp.Unix() - currentCandle.Timestamp.Unix()
+
+			// If there's a gap larger than the interval, fill it
+			if timeDiff > intervalSeconds {
+				// Calculate how many intervals fit in the gap
+				intervalsInGap := timeDiff / intervalSeconds
+
+				// Insert empty candles for each missing interval
+				// Start from j=1 because j=0 would be the current candle
+				for j := int64(1); j <= intervalsInGap; j++ {
+					gapTimestamp := currentCandle.Timestamp.Add(time.Duration(j*intervalSeconds) * time.Second)
+
+					// Make sure we don't insert a candle at the same time as the next candle
+					if gapTimestamp.Before(nextCandle.Timestamp) {
+						// Create an empty candle using previous close price for OHLC
+						emptyCandle := CandleData{
+							Timestamp:        gapTimestamp,
+							OpenPrice:        currentCandle.ClosePrice,
+							HighPrice:        currentCandle.ClosePrice,
+							LowPrice:         currentCandle.ClosePrice,
+							ClosePrice:       currentCandle.ClosePrice,
+							Volume:           0,
+							VolumeUSD:        0,
+							TransactionCount: 0,
+						}
+
+						filledCandles = append(filledCandles, emptyCandle)
+					} else {
+						// If we've reached or passed the next candle, stop inserting
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return filledCandles
 }
 
 func (cdl *CandleDataList) FromBytes(data []byte) error {
@@ -354,7 +419,7 @@ func getYearDay(timestamp time.Time) int {
 // GenerateCandleKVKey generates a KV key for a candle based on the new allocation logic:
 // 1. Get year and year day (day of year, 1-365/366)
 // 2. Get mod number based on interval
-// 3. Key format: {year}-{year_day % mod_number}-{tokenId}
+// 3. Key format: {interval}-{year}-{year_day % mod_number}-{tokenId}
 func GenerateCandleKVKey(tokenID string, interval time.Duration, timestamp time.Time, modNumbers map[time.Duration]int) string {
 	// Get year and year day
 	year := timestamp.UTC().Year()
@@ -485,7 +550,7 @@ func (cs *CandleChartKVStorage) FlushPendingCandles() error {
 		}
 
 		// Store merged candles to KV
-		slog.Debug("Flushed pending candles for key", "key", key)
+		slog.Debug("Flushed pending candles", "key", key)
 		if err := cs.engine.Store(key, existingCandles.ToBytes()); err != nil {
 			slog.Error("Failed to flush candles to KV", "key", key, "error", err)
 			continue
@@ -535,6 +600,9 @@ func (cs *CandleChartKVStorage) GetRecentCandles(tokenID string, interval time.D
 	if err := candles.FromBytes(data); err != nil {
 		return nil, err
 	}
+
+	// Fill gaps in candles before returning
+	candles = candles.FillGaps(interval)
 
 	fmt.Printf("%+v %s", candles, key)
 
@@ -609,7 +677,10 @@ type CandleChart struct {
 	data            chan *RealtimeTradeData
 	intervalCandles []*IntervalCandleChart
 	publisher       *CloudflareDurable
-	onCandleStored  CandleStoredCallback // Callback for when a candle is stored
+	onCandleStored  CandleStoredCallback      // Callback for when a candle is stored
+	isSpecialToken  func(tokenID string) bool // Function to check if token is special
+	lastPublishTime map[string]time.Time      // Track last publish time per token for rate limiting
+	publishMu       sync.RWMutex              // Mutex for thread-safe rate limiting
 }
 
 func NewCandleChart(worker *CloudflareWorker) *CandleChart {
@@ -617,6 +688,7 @@ func NewCandleChart(worker *CloudflareWorker) *CandleChart {
 		data:            make(chan *RealtimeTradeData, 1000),
 		intervalCandles: make([]*IntervalCandleChart, 0),
 		publisher:       NewCloudflareDurable(worker),
+		lastPublishTime: make(map[string]time.Time),
 	}
 }
 
@@ -633,6 +705,11 @@ func (cc *CandleChart) SetCandleStoredCallback(callback CandleStoredCallback) {
 // GetCandleStoredCallback gets the current callback
 func (cc *CandleChart) GetCandleStoredCallback() CandleStoredCallback {
 	return cc.onCandleStored
+}
+
+// SetIsSpecialTokenFunc sets the function to check if a token is special
+func (cc *CandleChart) SetIsSpecialTokenFunc(fn func(tokenID string) bool) {
+	cc.isSpecialToken = fn
 }
 
 func (cc *CandleChart) AddCandle(chainId, tokenAddress string, tradeTime time.Time, amountUSD, amountToken, price float64) error {
@@ -655,11 +732,14 @@ func (cc *CandleChart) StartAggregateCandleData() {
 
 	go func() {
 		for tradeData := range cc.data {
+			// Generate token ID once for this trade
+			tokenIdStr := GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)
+
 			// Process each interval candle, ordered with time frame
 			for _, candle := range cc.intervalCandles {
-				currentCandle, found := candle.currentCandles[GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)]
+				currentCandle, found := candle.currentCandles[tokenIdStr]
 				if !found {
-					candle.currentCandles[GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)] = &CandleData{
+					candle.currentCandles[tokenIdStr] = &CandleData{
 						OpenPrice:        tradeData.Price,
 						ClosePrice:       tradeData.Price,
 						HighPrice:        tradeData.Price,
@@ -687,13 +767,12 @@ func (cc *CandleChart) StartAggregateCandleData() {
 						cc.onCandleStored(tradeData.chainId, tradeData.tokenAddress, currentCandle, candle.interval)
 					}
 
-					tokenIdStr := GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)
 					if err := candle.storage.Store(tokenIdStr, candle.interval, currentCandle); err != nil {
 						slog.Error("store candle error", "error", err.Error(), "candle", currentCandle)
 						break
 					}
 
-					candle.currentCandles[GenerateTokenId(tradeData.chainId, tradeData.tokenAddress)] = &CandleData{
+					candle.currentCandles[tokenIdStr] = &CandleData{
 						OpenPrice:        tradeData.Price,
 						ClosePrice:       tradeData.Price,
 						HighPrice:        tradeData.Price,
@@ -706,14 +785,55 @@ func (cc *CandleChart) StartAggregateCandleData() {
 				}
 			}
 
-			// Publish realtime data
-			data, err := tradeData.ToBytes()
-			if err != nil {
-				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
-			}
-			if _, err := cc.publisher.Publish(GenerateTokenId(tradeData.chainId, tradeData.tokenAddress), data); err != nil {
-				slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
+			// Publish realtime data with rate limiting
+			if cc.shouldPublish(tokenIdStr) {
+				data, err := tradeData.ToBytes()
+				if err != nil {
+					slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
+				} else {
+					if _, err := cc.publisher.Publish(tokenIdStr, data); err != nil {
+						slog.Error("publish realtime trade data to cloudflare api failed", "error", err)
+					} else {
+						// Update last publish time
+						cc.updateLastPublishTime(tokenIdStr)
+					}
+				}
 			}
 		}
 	}()
+}
+
+// shouldPublish checks if enough time has passed since last publish based on token type
+// Special tokens: 1 update per second (1/s)
+// Other tokens: 0.1 updates per second (1 per 10 seconds)
+func (cc *CandleChart) shouldPublish(tokenID string) bool {
+	cc.publishMu.RLock()
+	lastTime, exists := cc.lastPublishTime[tokenID]
+	cc.publishMu.RUnlock()
+
+	now := time.Now()
+
+	// Determine rate limit based on whether token is special
+	var minInterval time.Duration
+	if cc.isSpecialToken != nil && cc.isSpecialToken(tokenID) {
+		// Special tokens: 1 update per second
+		minInterval = 1 * time.Second
+	} else {
+		// Other tokens: 0.1 updates per second (1 per 10 seconds)
+		minInterval = 10 * time.Second
+	}
+
+	// If never published or enough time has passed, allow publish
+	if !exists || now.Sub(lastTime) >= minInterval {
+		return true
+	}
+
+	return false
+}
+
+// updateLastPublishTime updates the last publish time for a token
+func (cc *CandleChart) updateLastPublishTime(tokenID string) {
+	cc.publishMu.Lock()
+	defer cc.publishMu.Unlock()
+	cc.lastPublishTime[tokenID] = time.Now()
 }

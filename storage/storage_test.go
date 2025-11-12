@@ -214,3 +214,228 @@ func TestGenerateCandleKVKey(t *testing.T) {
 	}
 	t.Logf("Nov 11 18:15, 2025, 1-week interval: %s", key5)
 }
+
+func TestCandleDataList_FillGaps(t *testing.T) {
+	// Test case 1: Empty list
+	emptyList := make(CandleDataList, 0)
+	result := emptyList.FillGaps(5 * time.Minute)
+	if len(result) != 0 {
+		t.Errorf("Expected empty list, got %d candles", len(result))
+	}
+
+	// Test case 2: Single candle - should return as-is
+	singleCandle := CandleDataList{
+		{
+			Timestamp:  time.Unix(1762798091, 0),
+			OpenPrice:  100.0,
+			ClosePrice: 105.0,
+			HighPrice:  110.0,
+			LowPrice:   95.0,
+			Volume:     1000.0,
+			VolumeUSD:  100000.0,
+		},
+	}
+	result = singleCandle.FillGaps(5 * time.Minute)
+	if len(result) != 1 {
+		t.Errorf("Expected 1 candle, got %d", len(result))
+	}
+	if result[0].Timestamp.Unix() != 1762798091 {
+		t.Errorf("Expected timestamp 1762798091, got %d", result[0].Timestamp.Unix())
+	}
+
+	// Test case 3: Two candles with no gap (exactly one interval apart) - should not insert
+	interval := 5 * time.Minute
+	baseTime := time.Unix(1762798091, 0)
+	noGapList := CandleDataList{
+		{
+			Timestamp:  baseTime,
+			OpenPrice:  100.0,
+			ClosePrice: 105.0,
+			HighPrice:  110.0,
+			LowPrice:   95.0,
+			Volume:     1000.0,
+			VolumeUSD:  100000.0,
+		},
+		{
+			Timestamp:  baseTime.Add(interval),
+			OpenPrice:  105.0,
+			ClosePrice: 110.0,
+			HighPrice:  115.0,
+			LowPrice:   100.0,
+			Volume:     1200.0,
+			VolumeUSD:  120000.0,
+		},
+	}
+	result = noGapList.FillGaps(interval)
+	if len(result) != 2 {
+		t.Errorf("Expected 2 candles (no gap), got %d", len(result))
+	}
+
+	// Test case 4: Two candles with one gap (user's example: 1762798091 and 1762798583)
+	// Difference: 492 seconds, interval: 300 seconds (5 minutes)
+	// Should insert 1 empty candle at 1762798091 + 300 = 1762798391
+	baseTime1 := time.Unix(1762798091, 0)
+	baseTime2 := time.Unix(1762798583, 0)
+	oneGapList := CandleDataList{
+		{
+			Timestamp:  baseTime1,
+			OpenPrice:  100.0,
+			ClosePrice: 105.0,
+			HighPrice:  110.0,
+			LowPrice:   95.0,
+			Volume:     1000.0,
+			VolumeUSD:  100000.0,
+		},
+		{
+			Timestamp:  baseTime2,
+			OpenPrice:  105.0,
+			ClosePrice: 110.0,
+			HighPrice:  115.0,
+			LowPrice:   100.0,
+			Volume:     1200.0,
+			VolumeUSD:  120000.0,
+		},
+	}
+	result = oneGapList.FillGaps(5 * time.Minute)
+	if len(result) != 3 {
+		t.Errorf("Expected 3 candles (1 gap filled), got %d", len(result))
+	}
+	// Check that the gap candle was inserted
+	expectedGapTime := time.Unix(1762798391, 0)
+	foundGap := false
+	for _, candle := range result {
+		if candle.Timestamp.Unix() == expectedGapTime.Unix() {
+			foundGap = true
+			// Verify empty candle properties
+			if candle.OpenPrice != 105.0 || candle.ClosePrice != 105.0 {
+				t.Errorf("Expected gap candle OHLC to be 105.0 (previous close), got O:%.2f C:%.2f", candle.OpenPrice, candle.ClosePrice)
+			}
+			if candle.Volume != 0 || candle.VolumeUSD != 0 || candle.TransactionCount != 0 {
+				t.Errorf("Expected gap candle to have zero volume, got Volume:%.2f VolumeUSD:%.2f TxCount:%d", candle.Volume, candle.VolumeUSD, candle.TransactionCount)
+			}
+			break
+		}
+	}
+	if !foundGap {
+		t.Errorf("Expected gap candle at timestamp %d, but not found", expectedGapTime.Unix())
+		t.Logf("Result candles:")
+		for i, c := range result {
+			t.Logf("  [%d] Timestamp: %d", i, c.Timestamp.Unix())
+		}
+	}
+
+	// Test case 5: Two candles with multiple gaps
+	// Base time + 0, Base time + 4 intervals (should insert 3 gap candles)
+	baseTime3 := time.Unix(1000, 0)
+	multiGapList := CandleDataList{
+		{
+			Timestamp:  baseTime3,
+			OpenPrice:  100.0,
+			ClosePrice: 105.0,
+			HighPrice:  110.0,
+			LowPrice:   95.0,
+			Volume:     1000.0,
+			VolumeUSD:  100000.0,
+		},
+		{
+			Timestamp:  baseTime3.Add(4 * interval),
+			OpenPrice:  105.0,
+			ClosePrice: 110.0,
+			HighPrice:  115.0,
+			LowPrice:   100.0,
+			Volume:     1200.0,
+			VolumeUSD:  120000.0,
+		},
+	}
+	result = multiGapList.FillGaps(interval)
+	if len(result) != 5 {
+		t.Errorf("Expected 5 candles (2 original + 3 gaps), got %d", len(result))
+	}
+	// Verify all gap candles are inserted
+	for i := 1; i <= 3; i++ {
+		expectedTime := baseTime3.Add(time.Duration(i) * interval)
+		found := false
+		for _, candle := range result {
+			if candle.Timestamp.Equal(expectedTime) {
+				found = true
+				if candle.Volume != 0 || candle.VolumeUSD != 0 {
+					t.Errorf("Gap candle at %d should have zero volume", expectedTime.Unix())
+				}
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected gap candle at timestamp %d, but not found", expectedTime.Unix())
+		}
+	}
+
+	// Test case 6: Unsorted candles should be sorted first
+	unsortedList := CandleDataList{
+		{
+			Timestamp:  baseTime3.Add(2 * interval),
+			OpenPrice:  110.0,
+			ClosePrice: 115.0,
+			HighPrice:  120.0,
+			LowPrice:   105.0,
+			Volume:     1300.0,
+			VolumeUSD:  130000.0,
+		},
+		{
+			Timestamp:  baseTime3,
+			OpenPrice:  100.0,
+			ClosePrice: 105.0,
+			HighPrice:  110.0,
+			LowPrice:   95.0,
+			Volume:     1000.0,
+			VolumeUSD:  100000.0,
+		},
+		{
+			Timestamp:  baseTime3.Add(interval),
+			OpenPrice:  105.0,
+			ClosePrice: 110.0,
+			HighPrice:  115.0,
+			LowPrice:   100.0,
+			Volume:     1200.0,
+			VolumeUSD:  120000.0,
+		},
+	}
+	result = unsortedList.FillGaps(interval)
+	if len(result) != 3 {
+		t.Errorf("Expected 3 candles (no gaps, just sorted), got %d", len(result))
+	}
+	// Verify they are sorted
+	for i := 0; i < len(result)-1; i++ {
+		if result[i].Timestamp.After(result[i+1].Timestamp) {
+			t.Errorf("Candles are not sorted: candle %d (%d) is after candle %d (%d)",
+				i, result[i].Timestamp.Unix(), i+1, result[i+1].Timestamp.Unix())
+		}
+	}
+
+	// Test case 7: Gap exactly equal to interval (edge case - should not insert)
+	exactIntervalList := CandleDataList{
+		{
+			Timestamp:  baseTime3,
+			OpenPrice:  100.0,
+			ClosePrice: 105.0,
+			HighPrice:  110.0,
+			LowPrice:   95.0,
+			Volume:     1000.0,
+			VolumeUSD:  100000.0,
+		},
+		{
+			Timestamp:  baseTime3.Add(interval),
+			OpenPrice:  105.0,
+			ClosePrice: 110.0,
+			HighPrice:  115.0,
+			LowPrice:   100.0,
+			Volume:     1200.0,
+			VolumeUSD:  120000.0,
+		},
+	}
+	result = exactIntervalList.FillGaps(interval)
+	if len(result) != 2 {
+		t.Errorf("Expected 2 candles (exact interval, no gap), got %d", len(result))
+	}
+
+	t.Logf("All FillGaps test cases passed")
+}
