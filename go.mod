@@ -4,14 +4,14 @@ go 1.24.0
 
 require (
 	github.com/TUTUBIG/telegram-bot-api/v5 v5.5.5
+	github.com/bits-and-blooms/bitset v1.24.3
+	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/ethereum/go-ethereum v1.16.7
 )
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251105134558-6082c37f58ad // indirect
-	github.com/StackExchange/wmi v1.2.1 // indirect
-	github.com/bits-and-blooms/bitset v1.24.3 // indirect
 	github.com/consensys/gnark-crypto v0.19.2 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.4.0 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240724233137-53bbb0ceb27a // indirect

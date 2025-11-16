@@ -66,6 +66,19 @@ func main() {
 	ormClient := orm.NewClient(cfg.WorkerHost, cfg.WorkerToken)
 	ormClient.SetLogger(slog.Default())
 
+	// Initialize bloom filter manager
+	bloomFilterMgr := storage.NewBloomFilterManager(ormClient, 1*time.Minute)
+	bloomFilterMgr.Start()
+	defer bloomFilterMgr.Stop()
+
+	// Initialize address bloom manager (handles refreshing bloom filters for registered addresses)
+	addressBloomManager := manager.NewAddressBloomManager(ormClient, bloomFilterMgr, cfg.AlertRefreshInterval)
+	addressBloomManager.SetLogger(slog.Default())
+	if err := addressBloomManager.Start(); err != nil {
+		log.Fatalf("Failed to start address bloom manager: %v", err)
+	}
+	defer addressBloomManager.Stop()
+
 	// Initialize alert system components
 	watchedTokenManager := manager.NewWatchedTokenManager(ormClient, cfg.AlertRefreshInterval)
 	watchedTokenManager.SetLogger(slog.Default())

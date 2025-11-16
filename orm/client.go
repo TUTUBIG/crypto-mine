@@ -68,7 +68,12 @@ func (c *Client) doRequest(method, endpoint string, body interface{}) (*http.Res
 
 // parseResponse parses the API response
 func (c *Client) parseResponse(resp *http.Response, target interface{}) error {
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			slog.Error("failed to close response body", "err", err)
+		}
+	}(resp.Body)
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -122,7 +127,12 @@ func (c *Client) ExecuteSQL(sql string, params ...interface{}) ([]map[string]int
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			slog.Error("failed to close response body", "err", err)
+		}
+	}(resp.Body)
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -178,7 +188,12 @@ func (c *Client) ExecuteSQLUpdate(sql string, params ...interface{}) (map[string
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			slog.Error("failed to close response body", "err", err)
+		}
+	}(resp.Body)
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -237,7 +252,12 @@ func (c *Client) ExecuteSQLBatch(queries []SQLBatchQuery) ([]map[string]interfac
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			slog.Error("failed to close response body", "err", err)
+		}
+	}(resp.Body)
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -388,4 +408,10 @@ func (c *Client) GetTokenByID(tokenID int) (*models.Token, error) {
 	}
 
 	return &token, nil
+}
+
+// GetAddressBloomFilter retrieves the address bloom filter for a chain
+func (c *Client) GetAddressBloomFilter(chainID string) (*http.Response, error) {
+	endpoint := fmt.Sprintf("/bloom-filters/addresses/%s", chainID)
+	return c.doRequest("GET", endpoint, nil)
 }

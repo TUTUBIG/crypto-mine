@@ -3,6 +3,7 @@ package parser
 import (
 	"context"
 	"crypto-mine/storage"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -44,11 +45,14 @@ func NewEVMEngine() *EvmEngine {
 	ctx, cancel := context.WithCancel(context.Background())
 	// For live WebSocket subscriptions, don't specify BlockHash, FromBlock, or ToBlock
 	// This creates a subscription for new blocks only
+	// Include both swap events and ERC20 Transfer events
+	transferTopic := GetTransferTopic()
 	filter := ethereum.FilterQuery{
 		Addresses: []common.Address{}, // Empty slice instead of nil
 		Topics: [][]common.Hash{
 			{
 				common.HexToHash(swapV3Topic1),
+				transferTopic, // Add ERC20 Transfer event topic
 				//common.HexToHash(swapV3Topic2),
 			},
 		},
@@ -104,6 +108,7 @@ type EVMChain struct {
 	lastProcessedBlock       uint64
 	lastProcessedBlockMutex  sync.RWMutex
 	pollInterval             time.Duration
+	transferMonitor          *ERC20TransferMonitor
 }
 
 func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc string, kvStorage storage.KVDriver, pollInterval time.Duration) (*EVMChain, error) {
@@ -137,6 +142,16 @@ func NewEVMChain(pi *storage.PoolInfo, cc *storage.CandleChart, rpc string, kvSt
 		pollInterval: pollInterval,
 	}
 
+	// Initialize ERC20 transfer monitor
+	transferMonitor, err := NewERC20TransferMonitor(chain.chainId, rpcClient, kvStorage)
+	if err != nil {
+		cancel()
+		rpcClient.Close()
+		return nil, fmt.Errorf("failed to create ERC20 transfer monitor: %w", err)
+	}
+	chain.transferMonitor = transferMonitor
+	transferMonitor.Start()
+
 	// Load last processed block number from KV store
 	if err := chain.loadLastProcessedBlock(); err != nil {
 		slog.Warn("Failed to load last processed block from KV store, starting from latest", "chain_id", chain.chainId, "error", err)
@@ -151,6 +166,14 @@ func (e *EVMChain) PrintBuffer() {
 
 func (e *EVMChain) ChainID() string {
 	return e.chainId
+}
+
+// GetTransferHistory retrieves transfer history for a specific token
+func (e *EVMChain) GetTransferHistory(tokenAddress string, limit int) ([]*TransferHistory, error) {
+	if e.transferMonitor == nil {
+		return nil, fmt.Errorf("transfer monitor not initialized")
+	}
+	return e.transferMonitor.GetTransferHistory(tokenAddress, limit)
 }
 
 func (e *EVMChain) RegisterStableCoin(nativeWrapper common.Address, nativePrice string, stableCoins []common.Address) *EVMChain {
@@ -344,7 +367,7 @@ func (e *EVMChain) fetchAndProcessLogs(filter ethereum.FilterQuery) error {
 }
 
 func (e *EVMChain) StartAssemblyLine() {
-	// handle protocols
+	// handle protocols and ERC20 transfers
 	go func() {
 		for {
 			select {
@@ -352,6 +375,15 @@ func (e *EVMChain) StartAssemblyLine() {
 				slog.Info("assembly lines shutting down", "network", e.chainId, "worker", "protocol")
 				return
 			case l := <-e.logs:
+				// Check if it's an ERC20 Transfer event first
+				if IsTransferEvent(&l) {
+					if e.transferMonitor != nil {
+						e.transferMonitor.ProcessLog(&l)
+					}
+					// Continue to check protocols as well (transfers can happen in swap transactions)
+				}
+
+				// Handle DEX protocol events
 				for _, protocol := range e.protocols {
 					if !protocol.HasTopic(l.Topics[0]) {
 						continue
@@ -407,6 +439,10 @@ func (e *EVMChain) handleProtocol(log *types.Log, protocol DEXProtocol) error {
 	if err != nil {
 		return err
 	}
+
+	// Store log reference in tradeInfo for later use
+	// We'll need to check addresses from the transaction
+	// For now, we'll check in handleTradeInfo where we have more context
 	e.trades <- tradeInfo
 	return nil
 }
@@ -505,7 +541,73 @@ func (e *EVMChain) handleTradeInfo(trade *TradeInfo) error {
 		e.realtimeNativeTokenPrice = tokenPrice
 	}
 
+	// Check if token exists in pool info and store transfer history
+	// Use the existing tokens map instead of bloom filter
+	if e.poolInfo != nil {
+		token := e.poolInfo.FindToken(e.chainId, tokenAddress)
+		if token != nil {
+			// Token exists in the map, store transfer history
+			e.storeTransferHistory(tokenAddress, poolInfo, trade, usd, tokenAmount, tokenPrice)
+		}
+	}
+
 	return e.candleChart.AddCandle(e.chainId, tokenAddress, trade.TradeTime, usd, tokenAmount, tokenPrice)
+}
+
+// storeTransferHistory stores transfer history to KV
+func (e *EVMChain) storeTransferHistory(
+	tokenAddress string,
+	poolInfo *storage.PairInfo,
+	trade *TradeInfo,
+	usd, tokenAmount, tokenPrice float64,
+) {
+	// Create transfer history entry
+	transferHistory := map[string]interface{}{
+		"chain_id":      e.chainId,
+		"token_address": tokenAddress,
+		"token_symbol":  poolInfo.Token0Symbol, // This might need adjustment
+		"pool_address":  poolInfo.PoolAddress,
+		"amount_usd":    usd,
+		"token_amount":  tokenAmount,
+		"token_price":   tokenPrice,
+		"timestamp":     trade.TradeTime.Unix(),
+		"protocol":      poolInfo.Protocol,
+	}
+
+	// Get existing transfer history from KV
+	kvKey := fmt.Sprintf("transfer-history-%s-%s", e.chainId, strings.ToLower(strings.TrimPrefix(tokenAddress, "0x")))
+
+	existingData, err := e.kvStorage.Load(kvKey)
+	var transfers []map[string]interface{}
+
+	if err == nil && existingData != nil {
+		// Parse existing data
+		if err := json.Unmarshal(existingData, &transfers); err != nil {
+			slog.Error("Failed to parse existing transfer history", "error", err, "key", kvKey)
+			transfers = []map[string]interface{}{}
+		}
+	} else {
+		transfers = []map[string]interface{}{}
+	}
+
+	// Append new transfer
+	transfers = append(transfers, transferHistory)
+
+	// Keep only last 1000 transfers to avoid KV size limits
+	if len(transfers) > 1000 {
+		transfers = transfers[len(transfers)-1000:]
+	}
+
+	// Store back to KV
+	data, err := json.Marshal(transfers)
+	if err != nil {
+		slog.Error("Failed to marshal transfer history", "error", err)
+		return
+	}
+
+	if err := e.kvStorage.Store(kvKey, data); err != nil {
+		slog.Error("Failed to store transfer history", "error", err, "key", kvKey)
+	}
 }
 
 func truncAmount(amount float64) float64 {
@@ -726,6 +828,12 @@ func (e *EVMChain) Stop() {
 	if e.subscriber != nil {
 		e.subscriber.Unsubscribe()
 	}
+
+	// Stop transfer monitor
+	if e.transferMonitor != nil {
+		e.transferMonitor.Stop()
+	}
+
 	close(e.shutdown)
 
 	// Save last processed block to KV store on graceful shutdown
