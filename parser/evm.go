@@ -54,6 +54,7 @@ func NewEVMEngine() *EvmEngine {
 				common.HexToHash(swapV3Topic1),
 				transferTopic, // Add ERC20 Transfer event topic
 				//common.HexToHash(swapV3Topic2),
+				common.HexToHash(swapV3Topic2),
 			},
 		},
 	}
@@ -866,7 +867,7 @@ type DEXProtocol interface {
 
 const (
 	swapV3Topic1 = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
-	// swapV3Topic2 = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83"
+	swapV3Topic2 = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83"
 )
 
 const (
